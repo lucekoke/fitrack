@@ -1,0 +1,418 @@
+/* ── Layout ── */
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.section-header h2 { margin: 0; }
+.section-header button { margin: 0; width: auto; }
+
+/* ── Session cards ── */
+article header { padding-bottom: .5rem; }
+
+.session-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: .5rem;
+}
+
+.session-header > span { flex: 1; }
+
+.session-header div {
+  display: flex;
+  gap: .4rem;
+  flex-shrink: 0;
+}
+
+.session-header button {
+  margin: 0;
+  width: auto;
+  padding: .25rem .6rem;
+  font-size: .85rem;
+}
+
+/* ── Tables ── */
+figure { margin: 0; overflow-x: auto; }
+
+table { font-size: .9rem; margin: 0; }
+
+td, th { padding: .35rem .5rem; vertical-align: middle; }
+
+tfoot td { border-top: 2px solid var(--pico-table-border-color); }
+
+.row-actions {
+  white-space: nowrap;
+  text-align: right;
+}
+
+.row-actions button {
+  padding: .15rem .4rem;
+  font-size: .8rem;
+  margin: 0 .1rem;
+  width: auto;
+}
+
+/* ── Estimated items ── */
+tr.estimated-row td:first-child { color: var(--pico-del-color); }
+
+/* ── Card footer ── */
+article footer {
+  padding-top: .5rem;
+}
+
+article footer button {
+  width: auto;
+  margin: 0;
+  font-size: .85rem;
+}
+
+/* ── Sync log ── */
+#sync-log {
+  display: none;
+  margin-top: 1rem;
+  padding: 1rem;
+  background: var(--pico-code-background-color);
+  border-radius: var(--pico-border-radius);
+  min-height: 120px;
+  max-height: 420px;
+  overflow-y: auto;
+  font-size: .85rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── Modal ── */
+dialog article {
+  width: min(700px, 94vw);
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+dialog article header {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+}
+
+dialog article header h3 { margin: 0; flex: 1; }
+
+/* ── Nav tabs ── */
+header nav a.tab-link { color: var(--pico-muted-color); }
+header nav a.tab-link.active {
+  color: var(--pico-primary);
+  font-weight: 600;
+}
+
+/* ── Form footer ── */
+.form-footer {
+  display: flex;
+  gap: .5rem;
+  justify-content: flex-end;
+  margin-top: 1.25rem;
+}
+
+.form-footer button { width: auto; margin: 0; }
+
+/* ── Weight input + unit dropdown ── */
+.weight-row {
+  display: flex;
+  gap: .5rem;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.weight-row select { flex-shrink: 0; margin: 0; }
+
+/* ── Empty state ── */
+.empty { color: var(--pico-muted-color); padding: .5rem 0; }
+
+/* ── Reorder buttons ── */
+.reorder-col { white-space: nowrap; padding: .2rem .3rem; width: 1px; }
+
+.reorder-btn {
+  display: inline-block;
+  padding: 0 .3rem;
+  font-size: .75rem;
+  line-height: 1.4;
+  width: auto;
+  margin: 0 .05rem;
+  background: none;
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+  color: var(--pico-muted-color);
+  cursor: pointer;
+}
+
+.reorder-btn:disabled {
+  opacity: .25;
+  cursor: default;
+}
+
+.reorder-btn:not(:disabled):hover {
+  border-color: var(--pico-primary);
+  color: var(--pico-primary);
+}
+
+/* Vertical stack of ▲▼ for meal session cards */
+.reorder-col-v {
+  display: flex;
+  flex-direction: column;
+  gap: .15rem;
+  flex-shrink: 0;
+  margin-right: .4rem;
+}
+
+/* ── Meals sub-tabs ── */
+.subtab-bar {
+  display: flex;
+  gap: 0;
+  margin-bottom: 1.25rem;
+  border-bottom: 2px solid var(--pico-muted-border-color);
+}
+
+.subtab-btn {
+  background: none !important;
+  border: none !important;
+  border-bottom: 3px solid transparent !important;
+  margin-bottom: -2px;
+  padding: .35rem 1rem !important;
+  font-size: .9rem;
+  color: var(--pico-muted-color) !important;
+  cursor: pointer;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  width: auto;
+  font-weight: normal !important;
+}
+
+.subtab-btn.active {
+  color: var(--pico-primary) !important;
+  font-weight: 600 !important;
+  border-bottom-color: var(--pico-primary) !important;
+}
+
+.subtab-btn:hover:not(.active) {
+  color: var(--pico-contrast) !important;
+  background: none !important;
+}
+
+/* ── Meal day groups ── */
+.day-macros {
+  flex: 1;
+  text-align: right;
+  font-size: .85rem;
+  color: var(--pico-muted-color);
+  margin-right: .75rem;
+}
+
+/* ── Individual meal cards within a day ── */
+.meal-card {
+  border-top: 1px solid var(--pico-table-border-color);
+  padding: .6rem 0 .4rem;
+}
+
+.meal-card:first-of-type { border-top: none; }
+
+.meal-card-header {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  margin-bottom: .4rem;
+}
+
+.meal-card-header > span:first-child { flex: 1; }
+
+.meal-card-header .meal-macros {
+  font-size: .8rem;
+  color: var(--pico-muted-color);
+  white-space: nowrap;
+}
+
+.meal-card-header div {
+  display: flex;
+  gap: .3rem;
+  flex-shrink: 0;
+}
+
+.meal-card-header button {
+  margin: 0;
+  width: auto;
+  padding: .2rem .5rem;
+  font-size: .82rem;
+}
+
+.meal-card footer { padding-top: .4rem; }
+.meal-card footer button { width: auto; margin: 0; font-size: .82rem; }
+
+.muted-label { color: var(--pico-muted-color); font-size: .85rem; }
+
+/* ── Food DB match badge ── */
+.food-badge {
+  display: inline-block;
+  font-size: .7rem;
+  padding: .1rem .3rem;
+  border-radius: 3px;
+  vertical-align: middle;
+  margin-left: .25rem;
+  white-space: nowrap;
+}
+.food-badge.match {
+  background: #d1fae5;
+  color: #065f46;
+  font-weight: 600;
+}
+.food-badge.new {
+  background: var(--pico-muted-border-color);
+  color: var(--pico-muted-color);
+}
+.food-badge.skip {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+/* ── Read-only macro inputs (DB-matched ingredient) ── */
+input.macro-auto {
+  background: var(--pico-muted-border-color) !important;
+  color: var(--pico-muted-color) !important;
+  cursor: default;
+}
+
+/* ── Placeholder tabs ── */
+.placeholder-hint {
+  color: var(--pico-muted-color);
+  margin-top: 2rem;
+  text-align: center;
+  font-style: italic;
+}
+
+/* ── Activity type badges ── */
+.activity-badge {
+  display: inline-block;
+  font-size: .75rem;
+  font-weight: 600;
+  padding: .1rem .4rem;
+  border-radius: var(--pico-border-radius);
+  margin-right: .4rem;
+  vertical-align: middle;
+}
+.badge-workout  { background: #e8f0fe; color: #1a56db; }
+.badge-endurance{ background: #def7ec; color: #057a55; }
+.badge-sport    { background: #fdf6b2; color: #8e4b10; }
+
+/* ── Analyse: chart chrome ── */
+:root {
+  --ana-surface: #fcfcfb;   /* chart surface */
+  --ana-grid:    #e1e0d9;   /* hairline gridlines */
+  --ana-axis:    #c3c2b7;   /* baseline / crosshair */
+  --ana-tick:    #898781;   /* muted axis text */
+  --ana-series:  #2a78d6;   /* series-1 blue (validated palette) — Max */
+  --ana-series2: #1baf7a;   /* series-2 aqua — Ø over sets */
+}
+.ana-legend {
+  display: flex;
+  gap: 1.25rem;
+  margin-bottom: .4rem;
+  font-size: .85rem;
+  color: var(--pico-muted-color);
+}
+.ana-legend span { display: inline-flex; align-items: center; gap: .4rem; }
+.ana-legend i {
+  display: inline-block;
+  width: 18px;
+  height: 3px;
+  border-radius: 2px;
+}
+.chart-tooltip .tip-key {
+  display: inline-block;
+  width: 12px;
+  height: 3px;
+  border-radius: 2px;
+  margin-right: .35rem;
+  vertical-align: middle;
+}
+.chart-wrap { position: relative; }
+.ana-tick {
+  font-size: 12px;
+  fill: var(--ana-tick);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+.ana-endlabel {
+  font-size: 13px;
+  font-weight: 600;
+  fill: var(--pico-color, #0b0b0b);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+.chart-tooltip {
+  position: absolute;
+  pointer-events: none;
+  background: #fff;
+  border: 1px solid var(--ana-grid);
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .08);
+  padding: .3rem .55rem;
+  font-size: .8rem;
+  display: flex;
+  flex-direction: column;
+  gap: .05rem;
+  white-space: nowrap;
+}
+.chart-tooltip strong { font-size: .9rem; }
+.chart-tooltip span   { color: var(--pico-muted-color); }
+
+/* ── Körper: photo dropzone & gallery ── */
+#photo-dropzone {
+  border: 2px dashed var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+  padding: 2rem 1rem;
+  text-align: center;
+  color: var(--pico-muted-color);
+  cursor: pointer;
+  transition: border-color .15s, background .15s;
+  margin-bottom: 1rem;
+  user-select: none;
+}
+#photo-dropzone:hover,
+#photo-dropzone.dragover {
+  border-color: var(--pico-primary);
+  background: var(--pico-primary-background, rgba(0, 114, 206, .06));
+  color: var(--pico-primary);
+}
+
+.photo-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: .75rem;
+}
+.photo-card {
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+  overflow: hidden;
+  position: relative;
+}
+.photo-card img {
+  width: 100%;
+  height: 160px;
+  object-fit: cover;
+  display: block;
+  cursor: pointer;
+}
+.photo-card figcaption {
+  font-size: .75rem;
+  padding: .25rem .5rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.photo-card .photo-del {
+  border: none;
+  background: none;
+  color: var(--pico-del-color, #c00);
+  cursor: pointer;
+  padding: 0 .25rem;
+  margin: 0;
+  width: auto;
+  font-size: .85rem;
+}

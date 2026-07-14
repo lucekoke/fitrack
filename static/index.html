@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="de" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>fitrack</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="container-fluid">
+    <nav>
+      <ul>
+        <li><strong>fitrack</strong></li>
+      </ul>
+      <ul>
+        <li><a href="#" class="tab-link active" data-tab="activities">Aktivitäten</a></li>
+        <li><a href="#" class="tab-link" data-tab="meals">Mahlzeiten</a></li>
+        <li><a href="#" class="tab-link" data-tab="body">Körper</a></li>
+        <li><a href="#" class="tab-link" data-tab="analysis">Analyse</a></li>
+        <li><a href="#" class="tab-link" data-tab="coach">AI Coach</a></li>
+      </ul>
+    </nav>
+  </header>
+
+  <main class="container">
+
+    <!-- ── Aktivitäten ── -->
+    <section id="tab-activities" class="tab-content">
+      <div class="section-header">
+        <h2>Aktivitäten</h2>
+        <div style="display:flex; gap:.5rem">
+          <button id="activities-export-btn" class="outline secondary" onclick="open_export_workouts()">&#8681; Export</button>
+          <button id="activities-add-btn" onclick="open_new_activity()">+ Neue Aktivität</button>
+        </div>
+      </div>
+      <div class="subtab-bar">
+        <button class="subtab-btn active" data-acts-tab="history"   onclick="switch_acts_tab(this)">Verlauf</button>
+        <button class="subtab-btn"        data-acts-tab="exercises" onclick="switch_acts_tab(this)">Übungen</button>
+      </div>
+      <div id="acts-subtab-history">
+        <div id="activities-list"><p aria-busy="true">Lade...</p></div>
+      </div>
+      <div id="acts-subtab-exercises" hidden>
+        <div id="exercises-db-list"></div>
+      </div>
+    </section>
+
+    <!-- ── Mahlzeiten ── -->
+    <section id="tab-meals" class="tab-content" hidden>
+      <div class="section-header">
+        <h2>Mahlzeiten</h2>
+        <button id="meals-add-btn" onclick="open_new_meal()">+ Neue Mahlzeit</button>
+      </div>
+      <div class="subtab-bar">
+        <button class="subtab-btn active" data-meals-tab="diary"   onclick="switch_meals_tab(this)">Tagebuch</button>
+        <button class="subtab-btn"        data-meals-tab="foods"   onclick="switch_meals_tab(this)">Lebensmittel</button>
+        <button class="subtab-btn"        data-meals-tab="recipes" onclick="switch_meals_tab(this)">Rezepte</button>
+      </div>
+      <div id="meals-subtab-diary">
+        <div id="meals-list"><p aria-busy="true">Lade...</p></div>
+      </div>
+      <div id="meals-subtab-foods" hidden>
+        <div id="foods-db-list"></div>
+      </div>
+      <div id="meals-subtab-recipes" hidden>
+        <div id="recipes-list"></div>
+      </div>
+    </section>
+
+    <!-- ── Körper ── -->
+    <section id="tab-body" class="tab-content" hidden>
+      <h2>Körper</h2>
+
+      <div class="section-header" style="margin-top:1rem">
+        <h4 style="margin:0">Körpergewicht</h4>
+        <button onclick="open_new_body_weight()">+ Eintrag</button>
+      </div>
+      <div id="body-weight-list"><p class="empty">Lade...</p></div>
+
+      <div class="section-header" style="margin-top:2rem">
+        <h4 style="margin:0">Körpermaße</h4>
+        <button onclick="open_new_body_measurement()">+ Eintrag</button>
+      </div>
+      <div id="body-measurements-list"><p class="empty">Lade...</p></div>
+
+      <div class="section-header" style="margin-top:2rem">
+        <h4 style="margin:0">Fortschrittsfotos</h4>
+      </div>
+      <div id="photo-dropzone">
+        <span>📷 Bilder hierher ziehen oder klicken zum Auswählen</span>
+        <input type="file" id="photo-file-input" accept="image/*" multiple hidden>
+      </div>
+      <div id="body-photos-grid" class="photo-grid"></div>
+    </section>
+
+    <!-- ── Analyse ── -->
+    <section id="tab-analysis" class="tab-content" hidden>
+      <h2>Analyse</h2>
+      <div style="display:flex;gap:.75rem;align-items:end;flex-wrap:wrap;margin-bottom:1rem">
+        <label style="margin:0;flex:1;min-width:14rem">Datenreihe
+          <select id="ana-series" onchange="render_analysis_chart()" style="margin:0"></select>
+        </label>
+      </div>
+      <div id="analysis-chart"><p class="empty">Lade...</p></div>
+    </section>
+
+    <!-- ── AI Coach ── -->
+    <section id="tab-coach" class="tab-content" hidden>
+      <h2>AI Coach</h2>
+      <p class="placeholder-hint">Hier kommt der KI-gestützte Coach hin.</p>
+    </section>
+
+  </main>
+
+  <!-- ── Modal ── -->
+  <dialog id="modal">
+    <article>
+      <header>
+        <button aria-label="Schließen" rel="prev" onclick="close_modal()"></button>
+        <h3 id="modal-title"></h3>
+      </header>
+      <div id="modal-body"></div>
+    </article>
+  </dialog>
+
+  <!-- ── Second modal (for pickers opened on top of the first modal) ── -->
+  <dialog id="modal2">
+    <article>
+      <header>
+        <button aria-label="Schließen" rel="prev" onclick="close_modal2()"></button>
+        <h3 id="modal2-title"></h3>
+      </header>
+      <div id="modal2-body"></div>
+    </article>
+  </dialog>
+
+  <script src="/static/app.js?v=33"></script>
+</body>
+</html>

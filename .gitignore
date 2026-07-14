@@ -1,0 +1,17 @@
+# Secrets & local config
+.env
+
+# Personal data — never publish
+*.db
+*.db-wal
+*.db-shm
+uploads/
+state.json
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Local tooling / editor state
+.claude/
