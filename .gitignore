@@ -15,3 +15,6 @@ __pycache__/
 
 # Local tooling / editor state
 .claude/
+
+# Local scratch notes
+edits.txt
