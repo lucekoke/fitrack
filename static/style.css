@@ -325,6 +325,22 @@ input.macro-auto {
   height: 3px;
   border-radius: 2px;
 }
+/* ── Daily targets (Soll/Ist) ── */
+.target-row td { font-size: .85rem; color: var(--pico-muted-color); }
+.target-row .target-ok    { color: #057a55; font-weight: 600; }
+.target-row .target-over  { color: #c81e1e; font-weight: 600; }
+.target-row .target-under { color: #8e4b10; font-weight: 600; }
+
+/* ── Recipe overview: inline ingredient list ── */
+.recipe-details summary { cursor: pointer; list-style-position: outside; }
+.recipe-ingredients {
+  margin: .3rem 0 0 .25rem;
+  padding-left: 1.1rem;
+  font-size: .85rem;
+  color: var(--pico-muted-color);
+}
+.recipe-ingredients li { margin: 0; padding: 0; }
+
 .chart-tooltip .tip-key {
   display: inline-block;
   width: 12px;

@@ -954,17 +954,28 @@ function on_food_name_change(input) {
   const food  = _food_lookup(input.value);
   const row   = input.closest('tr');
   const badge = row.querySelector('.food-badge');
+  const unit_sel = row.querySelector('[name="unit"]');
   if (food) {
     row.dataset.per100kcal    = food.kcal_per_100g;
     row.dataset.per100protein = food.protein_per_100g;
     row.dataset.per100carbs   = food.carbs_per_100g;
     row.dataset.per100fat     = food.fat_per_100g;
+    if (food.unit_grams) row.dataset.unitGrams = food.unit_grams;
+    else delete row.dataset.unitGrams;
+    if (unit_sel) {
+      // Preselect the food's own unit — for foods like eggs "2 Stk." is the
+      // natural entry; grams remain one click away.
+      const prefer = (food.unit_name && food.unit_grams) ? food.unit_name : 'g';
+      unit_sel.innerHTML = _unit_options_html(food, prefer);
+    }
     if (badge) { badge.className = 'food-badge match'; badge.textContent = '✓'; }
     _set_macros_readonly(row, true);
-    const amt = parseFloat(row.querySelector('[name="amount_grams"]').value);
-    if (!isNaN(amt) && amt > 0) _recalc_macros(row, amt);
+    const g = _row_grams(row);
+    if (!isNaN(g) && g > 0) _recalc_macros(row, g);
   } else {
     delete row.dataset.per100kcal;
+    delete row.dataset.unitGrams;
+    if (unit_sel) unit_sel.innerHTML = _unit_options_html(null, 'g');
     _set_macros_readonly(row, false);
     if (badge) {
       badge.className = 'food-badge' + (input.value.trim() ? ' new' : '');
@@ -975,9 +986,9 @@ function on_food_name_change(input) {
 
 function on_amount_change(input) {
   const row = input.closest('tr');
-  const amt = parseFloat(input.value);
-  if (!isNaN(amt) && amt > 0 && row.dataset.per100kcal !== undefined) {
-    _recalc_macros(row, amt);
+  const g   = _row_grams(row);
+  if (!isNaN(g) && g > 0 && row.dataset.per100kcal !== undefined) {
+    _recalc_macros(row, g);
   }
 }
 
@@ -1096,8 +1107,69 @@ function switch_meals_tab(btn) {
   document.getElementById('meals-subtab-foods').hidden   = (tab !== 'foods');
   document.getElementById('meals-subtab-recipes').hidden = (tab !== 'recipes');
   document.getElementById('meals-add-btn').hidden        = (tab !== 'diary');
+  document.getElementById('meals-targets-btn').hidden    = (tab !== 'diary');
   if (tab === 'foods')   load_foods_db();
   if (tab === 'recipes') load_recipes();
+}
+
+// ─── Daily targets (Soll/Ist) ─────────────────────────────────────────────
+
+let settings = {};
+
+async function load_settings() {
+  try { settings = await api('GET', '/api/settings'); } catch { settings = {}; }
+}
+
+function open_targets_modal() {
+  open_modal('Tagesziele', `<form>
+    <label>Kalorien-Limit (kcal/Tag)
+      <input type="number" name="kcal_target" min="0" step="10"
+             value="${esc(settings.kcal_target || '')}" placeholder="z.B. 2500 — leer = kein Ziel">
+    </label>
+    <label>Protein-Soll (g/Tag)
+      <input type="number" name="protein_target" min="0" step="1"
+             value="${esc(settings.protein_target || '')}" placeholder="z.B. 150 — leer = kein Ziel">
+    </label>
+    <div class="form-footer">
+      <button type="button" class="secondary outline" onclick="close_modal()">Abbrechen</button>
+      <button type="submit">Speichern</button>
+    </div>
+  </form>`, async data => {
+    await api('PUT', '/api/settings', {
+      kcal_target:    data.kcal_target    || null,
+      protein_target: data.protein_target || null,
+    });
+    await load_settings();
+    render_meals();
+  });
+}
+
+// Soll/Ist balance row for one day. kcal is a LIMIT (over = bad), protein a
+// GOAL (reached = good).
+function _target_row_html(dk, dp) {
+  const kcal_t = parseFloat(settings.kcal_target);
+  const prot_t = parseFloat(settings.protein_target);
+  if (isNaN(kcal_t) && isNaN(prot_t)) return '';
+  let kcal_cell = '', prot_cell = '';
+  if (!isNaN(kcal_t)) {
+    const diff = Math.round(kcal_t - dk);
+    const cls  = diff >= 0 ? 'target-ok' : 'target-over';
+    kcal_cell  = `<span class="${cls}">${diff >= 0 ? diff + ' übrig' : (-diff) + ' drüber'}</span>
+                  <small>/ ${Math.round(kcal_t)}</small>`;
+  }
+  if (!isNaN(prot_t)) {
+    const diff = dp - prot_t;
+    const cls  = diff >= 0 ? 'target-ok' : 'target-under';
+    prot_cell  = `<span class="${cls}">${diff >= 0 ? 'erreicht ✓' : (-diff).toFixed(0) + 'g fehlen'}</span>
+                  <small>/ ${Math.round(prot_t)}g</small>`;
+  }
+  return `<tr class="target-row">
+    <td></td>
+    <td>Bilanz (Soll)</td>
+    <td>${kcal_cell}</td>
+    <td>${prot_cell}</td>
+    <td></td><td></td><td></td>
+  </tr>`;
 }
 
 function render_meals() {
@@ -1158,7 +1230,7 @@ function render_meals() {
             <td><strong>${dc.toFixed(1)}g</strong></td>
             <td><strong>${df.toFixed(1)}g</strong></td>
             <td></td>
-          </tr></tfoot>
+          </tr>${_target_row_html(dk, dp)}</tfoot>
         </table>
       </figure>
     </article>`;
@@ -1186,17 +1258,26 @@ function render_foods_db() {
     return;
   }
   const sorted = [...foods_db].sort((a, b) => a.name.localeCompare(b.name));
+  const focus_badge = f => {
+    if (!f.focus) return '';
+    const label = { kcal: 'K', protein: 'P', beides: 'K+P' }[f.focus] || '';
+    const title = { kcal: 'Kaloriensensitiv', protein: 'Proteinsensitiv', beides: 'Kalorien- & proteinsensitiv' }[f.focus] || '';
+    return ` <span class="food-badge match" title="${title}">${label}</span>`;
+  };
+  const density_badge = f => f.energy_density === 'gering'
+    ? ' <span class="food-badge skip" title="Geringe Energiedichte — grobe Schätzung">≈</span>' : '';
   el.innerHTML = add_btn + `<figure><table>
     <thead><tr>
-      <th>Lebensmittel</th><th>kcal/100g</th><th>Eiweiß</th><th>KH</th><th>Fett</th><th></th>
+      <th>Lebensmittel</th><th>kcal/100g</th><th>Eiweiß</th><th>KH</th><th>Fett</th><th>Einheit</th><th></th>
     </tr></thead>
     <tbody>${sorted.map(f => `
       <tr>
-        <td>${esc(f.name)}</td>
+        <td>${esc(f.name)}${focus_badge(f)}${density_badge(f)}</td>
         <td>${f.kcal_per_100g.toFixed(1)}</td>
         <td>${f.protein_per_100g.toFixed(1)}g</td>
         <td>${f.carbs_per_100g.toFixed(1)}g</td>
         <td>${f.fat_per_100g.toFixed(1)}g</td>
+        <td>${f.unit_name && f.unit_grams ? `${esc(f.unit_name)} = ${f.unit_grams} g` : '&ndash;'}</td>
         <td class="row-actions">
           <button class="outline secondary" onclick="open_edit_food(${f.id})">&#9998;</button>
           <button class="outline contrast"  onclick="del_food(${f.id})">&#10005;</button>
@@ -1239,8 +1320,16 @@ function render_recipes() {
       }
       total_g += item.amount_grams || 0;
     }
+    // Ingredients visible directly on the overview page (expandable per recipe)
+    const ing_list = r.items.map(i =>
+      `<li>${i.amount_grams} g ${esc(i.food_name)}</li>`).join('');
     return `<tr>
-      <td><strong>${esc(r.name)}</strong></td>
+      <td>
+        <details class="recipe-details">
+          <summary><strong>${esc(r.name)}</strong></summary>
+          <ul class="recipe-ingredients">${ing_list || '<li>keine Zutaten</li>'}</ul>
+        </details>
+      </td>
       <td>${r.items.length} Zutat${r.items.length !== 1 ? 'en' : ''} (${Math.round(total_g)}&thinsp;g)</td>
       <td>${Math.round(tk)}&thinsp;kcal</td>
       <td>${tp.toFixed(1)}g P</td>
@@ -1347,7 +1436,7 @@ async function save_recipe(recipe_id) {
 
 // ─── Add recipe to meal ────────────────────────────────────────────────────
 
-async function open_add_recipe_to_meal() {
+async function open_add_recipe_to_meal(preselect_id = null) {
   await ensure_foods_loaded();
   // Recipes are otherwise only loaded when the Rezepte tab is opened — fetch
   // fresh so "+ Rezept" works even if that tab was never visited this session.
@@ -1358,7 +1447,7 @@ async function open_add_recipe_to_meal() {
   }
   const opts = recipes.map(r => {
     const total_g = r.items.reduce((sum, i) => sum + (i.amount_grams || 0), 0);
-    return `<option value="${r.id}" data-total="${total_g}">${esc(r.name)} (${Math.round(total_g)}&thinsp;g gesamt)</option>`;
+    return `<option value="${r.id}" data-total="${total_g}" ${r.id === preselect_id ? 'selected' : ''}>${esc(r.name)} (${Math.round(total_g)}&thinsp;g gesamt)</option>`;
   }).join('');
   open_modal2('Rezept hinzufügen', `<div>
     <label>Rezept<select id="ra-select" onchange="update_recipe_add_hint()">${opts}</select></label>
@@ -1426,12 +1515,41 @@ function _food_modal_body(f) {
       g <span id="per-g-hint" style="font-weight:normal;color:var(--pico-muted-color);font-size:.85rem"></span>
     </label>
     <div class="grid">
+      <label>Energiedichte
+        <select name="energy_density" onchange="on_density_change(this)">
+          <option value="hoch"   ${!f || f.energy_density !== 'gering' ? 'selected' : ''}>Hoch — genaue Angaben</option>
+          <option value="gering" ${f && f.energy_density === 'gering' ? 'selected' : ''}>Gering — grobe Schätzung reicht</option>
+        </select>
+      </label>
+      <label>Fokus
+        <select name="focus">
+          <option value=""        ${!f || !f.focus ? 'selected' : ''}>—</option>
+          <option value="kcal"    ${f && f.focus === 'kcal'    ? 'selected' : ''}>Kaloriensensitiv</option>
+          <option value="protein" ${f && f.focus === 'protein' ? 'selected' : ''}>Proteinsensitiv</option>
+          <option value="beides"  ${f && f.focus === 'beides'  ? 'selected' : ''}>Beides</option>
+        </select>
+      </label>
+    </div>
+    <div class="grid">
       <label>kcal<input type="number" name="kcal" step="0.01" value="${kcal}" required></label>
       <label>Eiweiß (g)<input type="number" name="protein" step="0.01" value="${protein}" required></label>
     </div>
     <div class="grid">
       <label>KH (g)<input type="number" name="carbs" step="0.01" value="${carbs}" required></label>
       <label>Fett (g)<input type="number" name="fat" step="0.01" value="${fat}" required></label>
+    </div>
+    <div class="grid">
+      <label>Einheit (optional)
+        <input type="text" name="unit_name" value="${f && f.unit_name ? esc(f.unit_name) : ''}"
+               placeholder="z.B. Stk., Handvoll" list="units-datalist">
+        <datalist id="units-datalist">
+          <option value="Stk."><option value="Handvoll"><option value="EL"><option value="TL"><option value="Scheibe">
+        </datalist>
+      </label>
+      <label>Gramm pro Einheit
+        <input type="number" name="unit_grams" step="0.1" min="0"
+               value="${f && f.unit_grams != null ? f.unit_grams : ''}" placeholder="z.B. 60">
+      </label>
     </div>
     <div class="form-footer">
       <button type="button" class="secondary outline" onclick="close_modal()">Abbrechen</button>
@@ -1447,16 +1565,40 @@ function update_per_g_label(input) {
   hint.textContent = (!isNaN(g) && g !== 100) ? `(wird auf 100g umgerechnet)` : '';
 }
 
+// Geringe Energiedichte → exact macros don't matter; grey the fields out
+// (values are kept, just no longer meant to be fine-tuned).
+function on_density_change(sel) {
+  const form   = sel.closest('form');
+  const gering = sel.value === 'gering';
+  ['kcal', 'protein', 'carbs', 'fat'].forEach(n => {
+    const inp = form.querySelector(`[name="${n}"]`);
+    if (gering && inp.value === '') inp.value = 0;   // satisfy `required`
+    inp.readOnly = gering;
+    inp.classList.toggle('macro-auto', gering);
+  });
+}
+
 function _food_macros_from_form(data) {
   const per_g  = parseFloat(data.per_g) || 100;
   const factor = 100 / per_g;
+  const unit_name  = (data.unit_name || '').trim();
+  const unit_grams = parseFloat(data.unit_grams);
   return {
     name:             data.name,
     kcal_per_100g:    parseFloat(data.kcal)    * factor,
     protein_per_100g: parseFloat(data.protein) * factor,
     carbs_per_100g:   parseFloat(data.carbs)   * factor,
     fat_per_100g:     parseFloat(data.fat)      * factor,
+    unit_name:        unit_name && !isNaN(unit_grams) && unit_grams > 0 ? unit_name : null,
+    unit_grams:       unit_name && !isNaN(unit_grams) && unit_grams > 0 ? unit_grams : null,
+    energy_density:   data.energy_density || 'hoch',
+    focus:            data.focus || null,
   };
+}
+
+function _init_density_state() {
+  const sel = document.querySelector('#modal-body [name="energy_density"]');
+  if (sel) on_density_change(sel);
 }
 
 function open_new_food() {
@@ -1464,6 +1606,7 @@ function open_new_food() {
     await api('POST', '/api/foods', _food_macros_from_form(data));
     await load_foods_db();
   });
+  _init_density_state();
 }
 
 function open_edit_food(food_id) {
@@ -1473,6 +1616,7 @@ function open_edit_food(food_id) {
     await api('PUT', `/api/foods/${food_id}`, _food_macros_from_form(data));
     await Promise.all([load_foods_db(), load_meals()]);
   });
+  _init_density_state();
 }
 
 async function del_food(food_id) {
@@ -1486,8 +1630,31 @@ function open_new_meal() {
   open_new_meal_for(new Date().toISOString().slice(0, 10));
 }
 
+// Suggestions for the meal-name field: standard meal labels + all recipe
+// names. Picking a recipe name offers to pull in its ingredients directly.
+const MEAL_NAME_SUGGESTIONS = ['Frühstück', 'Mittagessen', 'Abendessen', 'Snack'];
+
+function _mealname_datalist_html() {
+  const recipe_opts = recipes.map(r => `<option value="${esc(r.name)}">`).join('');
+  return `<datalist id="mealnames-datalist">
+    ${MEAL_NAME_SUGGESTIONS.map(n => `<option value="${n}">`).join('')}
+    ${recipe_opts}
+  </datalist>`;
+}
+
+function on_meal_name_change(input) {
+  const name = input.value.trim().toLowerCase();
+  if (!name) return;
+  const recipe = recipes.find(r => r.name.toLowerCase() === name);
+  if (!recipe) return;
+  // Only offer auto-fill while the ingredient list is still empty
+  const tbody = document.getElementById('em-items');
+  if (tbody && tbody.children.length === 0) open_add_recipe_to_meal(recipe.id);
+}
+
 async function open_new_meal_for(date) {
   await ensure_foods_loaded();
+  try { recipes = await api('GET', '/api/recipes'); } catch { /* suggestions only */ }
   const import_options = meals.map(m => {
     const label = m.meal_name || (m.items[0] ? m.items[0].food_name : '?');
     return `<option value="${m.id}">${esc(label)} (${m.date})</option>`;
@@ -1499,9 +1666,11 @@ async function open_new_meal_for(date) {
         <input type="date" id="em-date" value="${date}" required>
       </label>
       <label style="margin-bottom:.5rem">Name
-        <input type="text" id="em-name" placeholder="z.B. Chili mit Reis">
+        <input type="text" id="em-name" placeholder="z.B. Frühstück oder Rezeptname"
+               list="mealnames-datalist" onchange="on_meal_name_change(this)">
       </label>
     </div>
+    ${_mealname_datalist_html()}
     ${meals.length ? `
     <details style="margin-bottom:.75rem">
       <summary style="cursor:pointer;color:var(--pico-primary);font-size:.9rem;user-select:none">
@@ -1549,19 +1718,51 @@ async function open_new_meal_for(date) {
   open_modal('Neue Mahlzeit', body, null);
 }
 
-function _item_row_html(item_id, food_name = '', amount = '', kcal = '', protein = '', carbs = '', fat = '', per100 = null, skip_db = false) {
-  const pa = per100 ? ` data-per100kcal="${per100.kcal}" data-per100protein="${per100.protein}" data-per100carbs="${per100.carbs}" data-per100fat="${per100.fat}"` : '';
+// Unit <select> options for a row: grams always, plus the food's serving
+// unit (e.g. "Stk.") when one is defined in the foods DB.
+function _unit_options_html(food, selected = 'g') {
+  let opts = `<option value="g" ${selected === 'g' ? 'selected' : ''}>g</option>`;
+  if (food && food.unit_name && food.unit_grams) {
+    opts += `<option value="${esc(food.unit_name)}" ${selected === food.unit_name ? 'selected' : ''}>${esc(food.unit_name)}</option>`;
+  }
+  return opts;
+}
+
+// Amount of a row in grams, regardless of the unit it was entered in.
+function _row_grams(row) {
+  const val = parseFloat(row.querySelector('[name="amount_grams"]').value);
+  if (isNaN(val)) return NaN;
+  const unit = row.querySelector('[name="unit"]').value;
+  if (unit === 'g') return val;
+  const ug = parseFloat(row.dataset.unitGrams);
+  return isNaN(ug) ? NaN : val * ug;
+}
+
+function on_unit_change(sel) {
+  const row = sel.closest('tr');
+  const g   = _row_grams(row);
+  if (!isNaN(g) && g > 0 && row.dataset.per100kcal !== undefined) _recalc_macros(row, g);
+}
+
+function _item_row_html(item_id, food_name = '', amount = '', kcal = '', protein = '', carbs = '', fat = '', per100 = null, skip_db = false, unit = 'g') {
+  const food = food_name ? _food_lookup(food_name) : null;
+  const pa   = per100 ? ` data-per100kcal="${per100.kcal}" data-per100protein="${per100.protein}" data-per100carbs="${per100.carbs}" data-per100fat="${per100.fat}"` : '';
+  const ug   = (food && food.unit_grams) ? ` data-unit-grams="${food.unit_grams}"` : '';
   const skip_attr  = skip_db ? ' data-skip-db="true"' : '';
   const badge_cls  = skip_db ? 'skip' : (per100 ? 'match' : (food_name ? 'new' : ''));
   const badge_text = skip_db ? 'einmalig' : (per100 ? '✓' : (food_name ? 'neu' : ''));
-  return `<tr data-item-id="${item_id}"${pa}${skip_attr}>
+  return `<tr data-item-id="${item_id}"${pa}${ug}${skip_attr}>
     <td style="white-space:nowrap">
       <input type="text" name="food_name" value="${esc(food_name)}" placeholder="Lebensmittel" list="foods-datalist"
              onchange="on_food_name_change(this)" style="margin:0;min-width:8rem;display:inline-block;width:auto">
       <span class="food-badge ${badge_cls}">${badge_text}</span>
     </td>
-    <td><input type="number" name="amount_grams" value="${amount}"   step="0.1" min="0" placeholder="g"
-               oninput="on_amount_change(this)" style="margin:0;width:4.5rem"></td>
+    <td style="white-space:nowrap">
+      <input type="number" name="amount_grams" value="${amount}" step="0.1" min="0" placeholder="Menge"
+             oninput="on_amount_change(this)" style="margin:0;width:4.5rem;display:inline-block">
+      <select name="unit" onchange="on_unit_change(this)"
+              style="margin:0;width:auto;display:inline-block;padding:.2rem 1.4rem .2rem .4rem">${_unit_options_html(food, unit)}</select>
+    </td>
     <td><input type="number" name="kcal"         value="${kcal}"     step="0.1" placeholder="kcal" style="margin:0;width:4.5rem" ${per100 ? 'readonly class="macro-auto"' : ''}></td>
     <td><input type="number" name="protein_g"    value="${protein}"  step="0.1" placeholder="g"    style="margin:0;width:4rem"   ${per100 ? 'readonly class="macro-auto"' : ''}></td>
     <td><input type="number" name="carbs_g"      value="${carbs}"    step="0.1" placeholder="g"    style="margin:0;width:4rem"   ${per100 ? 'readonly class="macro-auto"' : ''}></td>
@@ -1637,12 +1838,17 @@ async function save_new_meal() {
       const food_name = row.querySelector('[name="food_name"]').value.trim();
       if (!food_name) return null;
       const v = n => { const r = row.querySelector(`[name="${n}"]`).value; return r ? parseFloat(r) : 0; };
+      const g = _row_grams(row);
+      const unit = row.querySelector('[name="unit"]').value;
+      const raw  = parseFloat(row.querySelector('[name="amount_grams"]').value);
       return api('POST', `/api/meals/${session_id}/items`, {
         food_name,
-        amount_grams: (() => { const r = row.querySelector('[name="amount_grams"]').value; return r ? parseFloat(r) : null; })(),
+        amount_grams: isNaN(g) ? null : g,
         kcal: v('kcal'), protein_g: v('protein_g'), carbs_g: v('carbs_g'), fat_g: v('fat_g'),
         is_estimated: false, comment: null,
         skip_food_db: row.dataset.skipDb === 'true',
+        amount_units: unit !== 'g' && !isNaN(raw) ? raw : null,
+        unit_name:    unit !== 'g' && !isNaN(raw) ? unit : null,
       });
     }).filter(Boolean));
     modal.close();
@@ -1665,9 +1871,11 @@ async function open_edit_meal(session_id) {
         <input type="date" id="em-date" value="${s.date}" required>
       </label>
       <label style="margin-bottom:.5rem">Name
-        <input type="text" id="em-name" value="${esc(s.meal_name || (s.items.length === 1 ? s.items[0].food_name : ''))}" placeholder="z.B. Chili">
+        <input type="text" id="em-name" value="${esc(s.meal_name || (s.items.length === 1 ? s.items[0].food_name : ''))}"
+               placeholder="z.B. Frühstück oder Rezeptname" list="mealnames-datalist" onchange="on_meal_name_change(this)">
       </label>
     </div>
+    ${_mealname_datalist_html()}
     <hr style="margin:.5rem 0 .75rem">
     <strong>Zutaten</strong>
     <div style="overflow-x:auto;margin-top:.4rem">
@@ -1680,7 +1888,12 @@ async function open_edit_meal(session_id) {
           ${s.items.map(i => {
             const food = _food_lookup(i.food_name);
             const per100 = food ? { kcal: food.kcal_per_100g, protein: food.protein_per_100g, carbs: food.carbs_per_100g, fat: food.fat_per_100g } : null;
-            return _item_row_html(i.id, i.food_name, i.amount_grams ?? '', i.kcal, i.protein_g, i.carbs_g, i.fat_g, per100, !food);
+            // Show the amount in the unit it was entered in (e.g. "2 Stk.")
+            const in_units = i.unit_name && i.amount_units != null;
+            return _item_row_html(i.id, i.food_name,
+              in_units ? i.amount_units : (i.amount_grams ?? ''),
+              i.kcal, i.protein_g, i.carbs_g, i.fat_g, per100, !food,
+              in_units ? i.unit_name : 'g');
           }).join('')}
         </tbody>
       </table>
@@ -1731,9 +1944,12 @@ async function save_meal_edit(session_id, original_ids) {
 
       if (!food_name) continue; // skip blank rows
 
+      const g    = _row_grams(row);
+      const unit = row.querySelector('[name="unit"]').value;
+      const raw  = amount_raw ? parseFloat(amount_raw) : NaN;
       const payload = {
         food_name,
-        amount_grams: amount_raw ? parseFloat(amount_raw) : null,
+        amount_grams: isNaN(g) ? null : g,
         kcal:      kcal_raw ? parseFloat(kcal_raw) : 0,
         protein_g: prot_raw ? parseFloat(prot_raw) : 0,
         carbs_g:   carb_raw ? parseFloat(carb_raw) : 0,
@@ -1741,6 +1957,8 @@ async function save_meal_edit(session_id, original_ids) {
         is_estimated: false,
         comment: null,
         skip_food_db: row.dataset.skipDb === 'true',
+        amount_units: unit !== 'g' && !isNaN(raw) ? raw : null,
+        unit_name:    unit !== 'g' && !isNaN(raw) ? unit : null,
       };
 
       if (item_id === 'new') {
@@ -1828,6 +2046,8 @@ async function do_copy_meal(session_id) {
         // Items not in the foods DB were entered as one-time — keep them out
         // of the DB when copying instead of silently auto-registering them.
         skip_food_db: !_food_lookup(item.food_name),
+        amount_units: item.amount_units ?? null,
+        unit_name:    item.unit_name || null,
       });
     }
     await load_meals();
@@ -2355,7 +2575,7 @@ function _attach_chart_hover(svg, px, unit, single) {
 load_workouts();
 load_endurance();
 load_sports();
-load_meals();
+load_settings().then(load_meals);   // targets must be known before rendering days
 load_exercise_catalog();
 _init_photo_dropzone();
 // foods_db / body / analysis data loaded on demand when their tab is opened

@@ -111,7 +111,56 @@ def init_db() -> None:
         _migrate_add_recipe_tables(conn)
         _migrate_add_exercise_catalog(conn)
         _migrate_add_body_tables(conn)
+        _migrate_add_food_v2(conn)
+        _migrate_add_settings(conn)
     log.debug("Database schema ready at %s", config.DB_PATH)
+
+
+def _migrate_add_food_v2(conn: sqlite3.Connection) -> None:
+    """Foods: optional serving unit, energy density, tracking focus.
+    Meal items: remember the unit the amount was entered in (display only —
+    amount_grams stays the canonical value for all macro math)."""
+    foods_cols = {r[1] for r in conn.execute("PRAGMA table_info(foods)").fetchall()}
+    if "unit_name" not in foods_cols:
+        conn.execute("ALTER TABLE foods ADD COLUMN unit_name TEXT")            # e.g. 'Stk.', 'Handvoll'
+        conn.execute("ALTER TABLE foods ADD COLUMN unit_grams REAL")           # grams per unit
+    if "energy_density" not in foods_cols:
+        conn.execute("ALTER TABLE foods ADD COLUMN energy_density TEXT NOT NULL DEFAULT 'hoch'")
+        conn.execute("ALTER TABLE foods ADD COLUMN focus TEXT")                # 'kcal' | 'protein' | 'beides' | NULL
+    item_cols = {r[1] for r in conn.execute("PRAGMA table_info(meal_items)").fetchall()}
+    if "amount_units" not in item_cols:
+        conn.execute("ALTER TABLE meal_items ADD COLUMN amount_units REAL")    # e.g. 2 (× Stk.)
+        conn.execute("ALTER TABLE meal_items ADD COLUMN unit_name TEXT")
+    conn.commit()
+
+
+def _migrate_add_settings(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """)
+    conn.commit()
+
+
+def get_settings() -> dict:
+    with _connect() as conn:
+        rows = conn.execute("SELECT key, value FROM settings").fetchall()
+    return {r["key"]: r["value"] for r in rows}
+
+
+def set_settings(values: dict) -> None:
+    with _connect() as conn:
+        for k, v in values.items():
+            if v is None or v == "":
+                conn.execute("DELETE FROM settings WHERE key=?", (k,))
+            else:
+                conn.execute(
+                    "INSERT INTO settings (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (k, str(v)),
+                )
 
 
 def _migrate_add_sort_order(conn: sqlite3.Connection) -> None:
@@ -317,7 +366,8 @@ def _migrate_legacy_tables(conn: sqlite3.Connection) -> None:
 def get_all_foods() -> list[dict]:
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT id, name, kcal_per_100g, protein_per_100g, carbs_per_100g, fat_per_100g FROM foods ORDER BY name"
+            "SELECT id, name, kcal_per_100g, protein_per_100g, carbs_per_100g, fat_per_100g, "
+            "unit_name, unit_grams, energy_density, focus FROM foods ORDER BY name"
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -327,32 +377,47 @@ def _cap(s: str) -> str:
     return s.title() if s else s
 
 
-def upsert_food(name: str, kcal: float, protein: float, carbs: float, fat: float) -> int:
+def upsert_food(name: str, kcal: float, protein: float, carbs: float, fat: float,
+                unit_name: str | None = None, unit_grams: float | None = None,
+                energy_density: str = "hoch", focus: str | None = None) -> int:
     name = _cap(name)
     now = _now()
     with _connect() as conn:
         conn.execute("""
-            INSERT INTO foods (name, kcal_per_100g, protein_per_100g, carbs_per_100g, fat_per_100g, created_at, last_used_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO foods (name, kcal_per_100g, protein_per_100g, carbs_per_100g, fat_per_100g,
+                               unit_name, unit_grams, energy_density, focus, created_at, last_used_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(name) DO UPDATE SET
                 kcal_per_100g    = excluded.kcal_per_100g,
                 protein_per_100g = excluded.protein_per_100g,
                 carbs_per_100g   = excluded.carbs_per_100g,
                 fat_per_100g     = excluded.fat_per_100g,
+                -- keep existing serving/classification when the caller sends none
+                -- (auto-registration from meal items knows nothing about units)
+                unit_name        = COALESCE(excluded.unit_name, foods.unit_name),
+                unit_grams       = COALESCE(excluded.unit_grams, foods.unit_grams),
+                energy_density   = CASE WHEN excluded.energy_density IS NULL
+                                        THEN foods.energy_density ELSE excluded.energy_density END,
+                focus            = COALESCE(excluded.focus, foods.focus),
                 last_used_at     = excluded.last_used_at
-        """, (name, kcal, protein, carbs, fat, now, now))
+        """, (name, kcal, protein, carbs, fat,
+              unit_name, unit_grams, energy_density, focus, now, now))
         row = conn.execute("SELECT id FROM foods WHERE LOWER(name)=LOWER(?)", (name,)).fetchone()
     return row["id"]
 
 
-def update_food(food_id: int, name: str, kcal: float, protein: float, carbs: float, fat: float) -> None:
+def update_food(food_id: int, name: str, kcal: float, protein: float, carbs: float, fat: float,
+                unit_name: str | None = None, unit_grams: float | None = None,
+                energy_density: str = "hoch", focus: str | None = None) -> None:
     cap_name = _cap(name)
     with _connect() as conn:
         old = conn.execute("SELECT name FROM foods WHERE id=?", (food_id,)).fetchone()
         old_name = old["name"] if old else cap_name
         conn.execute(
-            "UPDATE foods SET name=?, kcal_per_100g=?, protein_per_100g=?, carbs_per_100g=?, fat_per_100g=? WHERE id=?",
-            (cap_name, kcal, protein, carbs, fat, food_id),
+            "UPDATE foods SET name=?, kcal_per_100g=?, protein_per_100g=?, carbs_per_100g=?, fat_per_100g=?, "
+            "unit_name=?, unit_grams=?, energy_density=?, focus=? WHERE id=?",
+            (cap_name, kcal, protein, carbs, fat,
+             unit_name, unit_grams, energy_density, focus, food_id),
         )
         # Propagate to meal_items: rename and recalculate macros from amount_grams
         conn.execute("""
@@ -494,15 +559,17 @@ def insert_meal_item(
     food_id: int | None,
     comment: str | None,
     skip_food_db: bool = False,
+    amount_units: float | None = None,
+    unit_name: str | None = None,
 ) -> int:
     with _connect() as conn:
         cur = conn.execute("""
             INSERT INTO meal_items
                 (session_id, food_name, amount_grams, kcal, protein_g, carbs_g, fat_g,
-                 is_estimated, food_id, comment)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 is_estimated, food_id, comment, amount_units, unit_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (session_id, _cap(food_name), amount_grams, kcal, protein_g, carbs_g, fat_g,
-              int(is_estimated), food_id, comment))
+              int(is_estimated), food_id, comment, amount_units, unit_name))
     if not skip_food_db:
         _auto_upsert_food(food_name, amount_grams, kcal, protein_g, carbs_g, fat_g)
     return cur.lastrowid
@@ -594,7 +661,8 @@ def get_all_meal_sessions_full() -> list[dict]:
         result = []
         for s in sessions:
             items = conn.execute(
-                "SELECT id, food_name, amount_grams, kcal, protein_g, carbs_g, fat_g, is_estimated, comment "
+                "SELECT id, food_name, amount_grams, kcal, protein_g, carbs_g, fat_g, is_estimated, comment, "
+                "amount_units, unit_name "
                 "FROM meal_items WHERE session_id=? ORDER BY id",
                 (s["id"],)
             ).fetchall()
@@ -638,15 +706,17 @@ def update_meal_item(
     is_estimated: bool,
     comment: str | None,
     skip_food_db: bool = False,
+    amount_units: float | None = None,
+    unit_name: str | None = None,
 ) -> None:
     with _connect() as conn:
         conn.execute("""
             UPDATE meal_items
             SET food_name=?, amount_grams=?, kcal=?, protein_g=?, carbs_g=?,
-                fat_g=?, is_estimated=?, comment=?
+                fat_g=?, is_estimated=?, comment=?, amount_units=?, unit_name=?
             WHERE id=?
         """, (_cap(food_name), amount_grams, kcal, protein_g, carbs_g, fat_g,
-              int(is_estimated), comment, item_id))
+              int(is_estimated), comment, amount_units, unit_name, item_id))
     if not skip_food_db:
         _auto_upsert_food(food_name, amount_grams, kcal, protein_g, carbs_g, fat_g)
 

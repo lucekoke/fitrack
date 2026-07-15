@@ -105,6 +105,8 @@ class MealItemIn(BaseModel):
     is_estimated: bool = False
     comment: str | None = None
     skip_food_db: bool = False
+    amount_units: float | None = None   # amount as entered, e.g. 2 (× Stk.)
+    unit_name: str | None = None        # display unit, e.g. 'Stk.', 'Handvoll'
 
 
 class MealSessionIn(BaseModel):
@@ -241,6 +243,7 @@ def add_meal_item(session_id: int, body: MealItemIn):
         session_id, body.food_name, body.amount_grams,
         body.kcal, body.protein_g, body.carbs_g, body.fat_g,
         body.is_estimated, None, body.comment, body.skip_food_db,
+        body.amount_units, body.unit_name,
     )
     return {"id": item_id}
 
@@ -251,6 +254,7 @@ def update_meal_item(item_id: int, body: MealItemIn):
         item_id, body.food_name, body.amount_grams,
         body.kcal, body.protein_g, body.carbs_g, body.fat_g,
         body.is_estimated, body.comment, body.skip_food_db,
+        body.amount_units, body.unit_name,
     )
     return {"ok": True}
 
@@ -269,6 +273,10 @@ class FoodIn(BaseModel):
     protein_per_100g: float
     carbs_per_100g: float
     fat_per_100g: float
+    unit_name: str | None = None        # optional serving unit, e.g. 'Stk.'
+    unit_grams: float | None = None     # grams per serving unit
+    energy_density: str = "hoch"        # 'hoch' | 'gering'
+    focus: str | None = None            # 'kcal' | 'protein' | 'beides'
 
 
 @app.get("/api/foods")
@@ -279,14 +287,32 @@ def get_foods():
 @app.post("/api/foods", status_code=201)
 def create_food(body: FoodIn):
     food_id = db.upsert_food(body.name, body.kcal_per_100g, body.protein_per_100g,
-                             body.carbs_per_100g, body.fat_per_100g)
+                             body.carbs_per_100g, body.fat_per_100g,
+                             body.unit_name, body.unit_grams, body.energy_density, body.focus)
     return {"id": food_id}
 
 
 @app.put("/api/foods/{food_id}")
 def update_food(food_id: int, body: FoodIn):
     db.update_food(food_id, body.name, body.kcal_per_100g, body.protein_per_100g,
-                   body.carbs_per_100g, body.fat_per_100g)
+                   body.carbs_per_100g, body.fat_per_100g,
+                   body.unit_name, body.unit_grams, body.energy_density, body.focus)
+    return {"ok": True}
+
+
+# ── Settings (daily targets etc.) ──────────────────────────────────────────
+
+class SettingsIn(BaseModel):
+    kcal_target: str | None = None      # daily calorie limit
+    protein_target: str | None = None   # daily protein goal (g)
+
+@app.get("/api/settings")
+def get_settings():
+    return db.get_settings()
+
+@app.put("/api/settings")
+def put_settings(body: SettingsIn):
+    db.set_settings(body.model_dump())
     return {"ok": True}
 
 
