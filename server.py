@@ -275,8 +275,7 @@ class FoodIn(BaseModel):
     fat_per_100g: float
     unit_name: str | None = None        # optional serving unit, e.g. 'Stk.'
     unit_grams: float | None = None     # grams per serving unit
-    energy_density: str = "hoch"        # 'hoch' | 'gering'
-    focus: str | None = None            # 'kcal' | 'protein' | 'beides'
+    category: str = "standard"          # 'standard' | 'kalorien' | 'protein' | 'nebenbei'
 
 
 @app.get("/api/foods")
@@ -288,7 +287,7 @@ def get_foods():
 def create_food(body: FoodIn):
     food_id = db.upsert_food(body.name, body.kcal_per_100g, body.protein_per_100g,
                              body.carbs_per_100g, body.fat_per_100g,
-                             body.unit_name, body.unit_grams, body.energy_density, body.focus)
+                             body.unit_name, body.unit_grams, body.category)
     return {"id": food_id}
 
 
@@ -296,7 +295,7 @@ def create_food(body: FoodIn):
 def update_food(food_id: int, body: FoodIn):
     db.update_food(food_id, body.name, body.kcal_per_100g, body.protein_per_100g,
                    body.carbs_per_100g, body.fat_per_100g,
-                   body.unit_name, body.unit_grams, body.energy_density, body.focus)
+                   body.unit_name, body.unit_grams, body.category)
     return {"ok": True}
 
 
@@ -305,6 +304,7 @@ def update_food(food_id: int, body: FoodIn):
 class SettingsIn(BaseModel):
     kcal_target: str | None = None      # daily calorie limit
     protein_target: str | None = None   # daily protein goal (g)
+    sync_dir: str | None = None         # shared folder for catalog sync (e.g. OneDrive)
 
 @app.get("/api/settings")
 def get_settings():
@@ -312,8 +312,69 @@ def get_settings():
 
 @app.put("/api/settings")
 def put_settings(body: SettingsIn):
-    db.set_settings(body.model_dump())
+    # exclude_unset: only touch keys the caller actually sent — the targets
+    # dialog must not wipe sync_dir and vice versa
+    db.set_settings(body.model_dump(exclude_unset=True))
     return {"ok": True}
+
+
+# ── Catalog sync via shared folder (e.g. OneDrive) ─────────────────────────
+# Each machine writes fitrack-catalogs-<host>.json into the shared folder and
+# merges every other machine's file. Foods, recipes and exercises are shared;
+# diaries (workouts, meals, body data) stay local.
+
+def _sync_host() -> str:
+    import platform, re
+    return re.sub(r"[^A-Za-z0-9_-]", "_", platform.node() or "local")
+
+def _sync_dir() -> Path | None:
+    raw = db.get_settings().get("sync_dir")
+    return Path(raw) if raw else None
+
+@app.get("/api/sync/status")
+def sync_status():
+    d = _sync_dir()
+    peers = []
+    if d and d.is_dir():
+        own = f"fitrack-catalogs-{_sync_host()}.json"
+        peers = [f.name for f in d.glob("fitrack-catalogs-*.json") if f.name != own]
+    return {
+        "sync_dir":   str(d) if d else None,
+        "dir_exists": bool(d and d.is_dir()),
+        "host":       _sync_host(),
+        "peer_files": peers,
+    }
+
+@app.post("/api/sync/run")
+def sync_run():
+    import json
+    d = _sync_dir()
+    if d is None:
+        return {"ok": False, "error": "Kein Sync-Ordner konfiguriert."}
+    if not d.is_dir():
+        return {"ok": False, "error": f"Ordner nicht gefunden: {d}"}
+
+    own_name = f"fitrack-catalogs-{_sync_host()}.json"
+    added = {"foods": 0, "recipes": 0, "exercises": 0}
+    peers = []
+    for f in sorted(d.glob("fitrack-catalogs-*.json")):
+        if f.name == own_name:
+            continue
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue          # unreadable peer file — skip, never abort the sync
+        c = db.merge_catalogs(data)
+        for k in added:
+            added[k] += c[k]
+        peers.append(f.name)
+
+    # Write own export AFTER merging so it already contains everything
+    (d / own_name).write_text(
+        json.dumps(db.get_catalogs_export(), ensure_ascii=False, indent=1),
+        encoding="utf-8",
+    )
+    return {"ok": True, "added": added, "peers": peers, "own_file": own_name}
 
 
 @app.delete("/api/foods/{food_id}")

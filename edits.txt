@@ -1,0 +1,4 @@
+-change color coding when comparing calories/proteins to target: for calories anything +-5% is green, anything +-15% is orange and anything outside red; for protein the same for lower values, but anything above is green
+-on top of each "Lebensmittel", make the unit switchable (can be gram/Scheibe/Stück/...); when chosing something other than grams, add the possibility to also add the weight of that unit, but optional; remove the two bottom fields with "Einheit" and "Gramm pro Einheit"
+-add "Schwimmen" to activities with Datum, Distanz (m), Zeit, optional Herzfrequenz (bpm) amd kcal
+-the README-file does not contain Umlaute

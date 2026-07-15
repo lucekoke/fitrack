@@ -280,6 +280,12 @@ input.macro-auto {
   cursor: default;
 }
 
+/* ── Dimmed but editable macro inputs ("Nebenbei" foods — rough estimates) ── */
+input.macro-dim {
+  background: var(--pico-muted-border-color) !important;
+  color: var(--pico-muted-color) !important;
+}
+
 /* ── Placeholder tabs ── */
 .placeholder-hint {
   color: var(--pico-muted-color);
@@ -325,11 +331,13 @@ input.macro-auto {
   height: 3px;
   border-radius: 2px;
 }
-/* ── Daily targets (Soll/Ist) ── */
+/* ── Daily targets (Soll/Ist) ──
+   Deviation bands: ±5% green, ±15% orange, outside red
+   (protein above target is always green). */
 .target-row td { font-size: .85rem; color: var(--pico-muted-color); }
-.target-row .target-ok    { color: #057a55; font-weight: 600; }
-.target-row .target-over  { color: #c81e1e; font-weight: 600; }
-.target-row .target-under { color: #8e4b10; font-weight: 600; }
+.target-row .target-ok   { color: #057a55; font-weight: 600; }
+.target-row .target-warn { color: #b45309; font-weight: 600; }
+.target-row .target-bad  { color: #c81e1e; font-weight: 600; }
 
 /* ── Recipe overview: inline ingredient list ── */
 .recipe-details summary { cursor: pointer; list-style-position: outside; }

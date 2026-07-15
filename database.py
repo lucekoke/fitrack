@@ -113,7 +113,32 @@ def init_db() -> None:
         _migrate_add_body_tables(conn)
         _migrate_add_food_v2(conn)
         _migrate_add_settings(conn)
+        _migrate_food_category(conn)
     log.debug("Database schema ready at %s", config.DB_PATH)
+
+
+def _migrate_food_category(conn: sqlite3.Connection) -> None:
+    """Consolidate energy_density + focus into a single category label.
+
+    Categories: 'standard' (precise entry), 'kalorien' (energy-dense, calories
+    matter), 'protein' (tracked as protein source), 'nebenbei' (low energy
+    density — rough estimate is fine, macros de-emphasised in the UI).
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(foods)").fetchall()}
+    if "category" not in cols:
+        conn.execute("ALTER TABLE foods ADD COLUMN category TEXT NOT NULL DEFAULT 'standard'")
+        if "energy_density" in cols:
+            conn.execute("""
+                UPDATE foods SET category = CASE
+                    WHEN energy_density = 'gering'      THEN 'nebenbei'
+                    WHEN focus = 'protein'              THEN 'protein'
+                    WHEN focus IN ('kcal', 'beides')    THEN 'kalorien'
+                    ELSE 'standard' END
+            """)
+    if "energy_density" in cols:
+        conn.execute("ALTER TABLE foods DROP COLUMN energy_density")
+        conn.execute("ALTER TABLE foods DROP COLUMN focus")
+    conn.commit()
 
 
 def _migrate_add_food_v2(conn: sqlite3.Connection) -> None:
@@ -192,7 +217,7 @@ def _migrate_add_activity_tables(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS endurance_sessions (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
             date          TEXT    NOT NULL,
-            activity_type TEXT    NOT NULL CHECK(activity_type IN ('run','ride')),
+            activity_type TEXT    NOT NULL CHECK(activity_type IN ('run','ride','swim')),
             distance_km   REAL,
             duration_s    INTEGER,
             elevation_m   REAL,
@@ -204,6 +229,36 @@ def _migrate_add_activity_tables(conn: sqlite3.Connection) -> None:
             msg_index     INTEGER NOT NULL DEFAULT 0
         )
     """)
+    # Older DBs have a CHECK constraint without 'swim' — SQLite cannot alter
+    # constraints, so rebuild the table once if needed.
+    ddl = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='endurance_sessions'"
+    ).fetchone()
+    if ddl and "'swim'" not in (ddl["sql"] or ""):
+        conn.executescript("""
+            ALTER TABLE endurance_sessions RENAME TO endurance_sessions_old;
+            CREATE TABLE endurance_sessions (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                date          TEXT    NOT NULL,
+                activity_type TEXT    NOT NULL CHECK(activity_type IN ('run','ride','swim')),
+                distance_km   REAL,
+                duration_s    INTEGER,
+                elevation_m   REAL,
+                avg_hr        INTEGER,
+                kcal          REAL,
+                comment       TEXT,
+                sort_order    INTEGER NOT NULL DEFAULT 0,
+                telegram_message_id INTEGER,
+                msg_index     INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO endurance_sessions
+                (id, date, activity_type, distance_km, duration_s, elevation_m,
+                 avg_hr, kcal, comment, sort_order, telegram_message_id, msg_index)
+            SELECT id, date, activity_type, distance_km, duration_s, elevation_m,
+                   avg_hr, kcal, comment, sort_order, telegram_message_id, msg_index
+            FROM endurance_sessions_old;
+            DROP TABLE endurance_sessions_old;
+        """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS sport_sessions (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -367,7 +422,7 @@ def get_all_foods() -> list[dict]:
     with _connect() as conn:
         rows = conn.execute(
             "SELECT id, name, kcal_per_100g, protein_per_100g, carbs_per_100g, fat_per_100g, "
-            "unit_name, unit_grams, energy_density, focus FROM foods ORDER BY name"
+            "unit_name, unit_grams, category FROM foods ORDER BY name"
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -379,14 +434,14 @@ def _cap(s: str) -> str:
 
 def upsert_food(name: str, kcal: float, protein: float, carbs: float, fat: float,
                 unit_name: str | None = None, unit_grams: float | None = None,
-                energy_density: str = "hoch", focus: str | None = None) -> int:
+                category: str | None = None) -> int:
     name = _cap(name)
     now = _now()
     with _connect() as conn:
         conn.execute("""
             INSERT INTO foods (name, kcal_per_100g, protein_per_100g, carbs_per_100g, fat_per_100g,
-                               unit_name, unit_grams, energy_density, focus, created_at, last_used_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                               unit_name, unit_grams, category, created_at, last_used_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'standard'), ?, ?)
             ON CONFLICT(name) DO UPDATE SET
                 kcal_per_100g    = excluded.kcal_per_100g,
                 protein_per_100g = excluded.protein_per_100g,
@@ -396,28 +451,27 @@ def upsert_food(name: str, kcal: float, protein: float, carbs: float, fat: float
                 -- (auto-registration from meal items knows nothing about units)
                 unit_name        = COALESCE(excluded.unit_name, foods.unit_name),
                 unit_grams       = COALESCE(excluded.unit_grams, foods.unit_grams),
-                energy_density   = CASE WHEN excluded.energy_density IS NULL
-                                        THEN foods.energy_density ELSE excluded.energy_density END,
-                focus            = COALESCE(excluded.focus, foods.focus),
                 last_used_at     = excluded.last_used_at
         """, (name, kcal, protein, carbs, fat,
-              unit_name, unit_grams, energy_density, focus, now, now))
+              unit_name, unit_grams, category, now, now))
+        if category is not None:
+            conn.execute("UPDATE foods SET category=? WHERE LOWER(name)=LOWER(?)", (category, name))
         row = conn.execute("SELECT id FROM foods WHERE LOWER(name)=LOWER(?)", (name,)).fetchone()
     return row["id"]
 
 
 def update_food(food_id: int, name: str, kcal: float, protein: float, carbs: float, fat: float,
                 unit_name: str | None = None, unit_grams: float | None = None,
-                energy_density: str = "hoch", focus: str | None = None) -> None:
+                category: str = "standard") -> None:
     cap_name = _cap(name)
     with _connect() as conn:
         old = conn.execute("SELECT name FROM foods WHERE id=?", (food_id,)).fetchone()
         old_name = old["name"] if old else cap_name
         conn.execute(
             "UPDATE foods SET name=?, kcal_per_100g=?, protein_per_100g=?, carbs_per_100g=?, fat_per_100g=?, "
-            "unit_name=?, unit_grams=?, energy_density=?, focus=? WHERE id=?",
+            "unit_name=?, unit_grams=?, category=? WHERE id=?",
             (cap_name, kcal, protein, carbs, fat,
-             unit_name, unit_grams, energy_density, focus, food_id),
+             unit_name, unit_grams, category, food_id),
         )
         # Propagate to meal_items: rename and recalculate macros from amount_grams
         conn.execute("""
@@ -985,6 +1039,63 @@ def delete_body_photo(photo_id: int) -> str | None:
         row = conn.execute("SELECT filename FROM body_photos WHERE id=?", (photo_id,)).fetchone()
         conn.execute("DELETE FROM body_photos WHERE id=?", (photo_id,))
     return row["filename"] if row else None
+
+
+# ── Catalog sync (shared folder) ───────────────────────────────────────────
+# Shared between users: foods, recipes, exercise catalog. Diaries stay local.
+
+def get_catalogs_export() -> dict:
+    return {
+        "exported_at": _now(),
+        "foods":     get_all_foods(),
+        "recipes":   get_all_recipes(),
+        "exercises": get_all_exercises(),
+    }
+
+
+def merge_catalogs(data: dict) -> dict:
+    """Merge a peer's catalog export into the local DB.
+
+    Conservative rules: entries missing locally are added; existing local
+    entries are never overwritten (no clobbering hand-tuned values). Exercise
+    comments are filled in when the local one is empty. Deletions are not
+    propagated."""
+    added = {"foods": 0, "recipes": 0, "exercises": 0}
+
+    for f in data.get("foods", []):
+        if not f.get("name"):
+            continue
+        if get_food_by_name(f["name"]) is None:
+            upsert_food(
+                f["name"], f.get("kcal_per_100g", 0), f.get("protein_per_100g", 0),
+                f.get("carbs_per_100g", 0), f.get("fat_per_100g", 0),
+                f.get("unit_name"), f.get("unit_grams"), f.get("category", "standard"),
+            )
+            added["foods"] += 1
+
+    local_recipes = {r["name"].lower() for r in get_all_recipes()}
+    for r in data.get("recipes", []):
+        if not r.get("name") or r["name"].lower() in local_recipes:
+            continue
+        items = [{"food_name": i["food_name"], "amount_grams": i["amount_grams"]}
+                 for i in r.get("items", []) if i.get("food_name")]
+        upsert_recipe(None, r["name"], items)
+        added["recipes"] += 1
+
+    local_ex = {e["name"].lower(): e for e in get_all_exercises()}
+    for e in data.get("exercises", []):
+        name = (e.get("name") or "").strip()
+        if not name:
+            continue
+        existing = local_ex.get(name.lower())
+        if existing is None:
+            upsert_exercise(name, e.get("comment"))
+            added["exercises"] += 1
+        elif not existing.get("comment") and e.get("comment"):
+            # fill in a comment (e.g. YouTube link) we don't have yet
+            upsert_exercise(existing["name"], e["comment"])
+
+    return added
 
 
 # ── helpers ────────────────────────────────────────────────────────────────

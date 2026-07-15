@@ -117,6 +117,15 @@ function fmt_speed(distance_km, duration_s) {
   return (distance_km / (duration_s / 3600)).toFixed(1) + ' km/h';
 }
 
+// Swimming pace: minutes per 100 m
+function fmt_pace100(distance_km, duration_s) {
+  if (!distance_km || !duration_s) return '—';
+  const pace_s = duration_s / (distance_km * 10);   // km → 100 m units
+  const m = Math.floor(pace_s / 60);
+  const s = Math.round(pace_s % 60);
+  return `${m}:${String(s).padStart(2, '0')} /100m`;
+}
+
 function opt(val, suffix = '', fallback = '—') {
   return (val != null && val !== '') ? (val + suffix) : fallback;
 }
@@ -281,20 +290,25 @@ function tpl_exercise(ex = null) {
 
 function tpl_endurance(s = null, default_type = 'run') {
   const type = s ? s.activity_type : default_type;
+  const swim = type === 'swim';
+  // Swimming distances are entered in metres, run/ride in km (stored: km)
+  const dist_val = s && s.distance_km != null
+    ? (swim ? Math.round(s.distance_km * 1000) : s.distance_km) : '';
   return `<form>
     <div class="grid">
       <label>Datum<input type="date" name="date" value="${s ? esc(s.date) : ''}" required></label>
       <label>Typ
-        <select name="activity_type">
+        <select name="activity_type" onchange="on_endurance_type_change(this)">
           <option value="run"  ${type === 'run'  ? 'selected' : ''}>🏃 Lauf</option>
           <option value="ride" ${type === 'ride' ? 'selected' : ''}>🚴 Radfahrt</option>
+          <option value="swim" ${type === 'swim' ? 'selected' : ''}>🏊 Schwimmen</option>
         </select>
       </label>
     </div>
     <div class="grid">
-      <label>Distanz (km)
-        <input type="number" name="distance_km" step="0.01" min="0"
-               value="${s && s.distance_km != null ? s.distance_km : ''}">
+      <label><span id="en-dist-label">Distanz (${swim ? 'm' : 'km'})</span>
+        <input type="number" name="distance_km" step="${swim ? 1 : 0.01}" min="0"
+               value="${dist_val}">
       </label>
       <label>Zeit (h:mm:ss)
         <input type="text" name="duration_str" placeholder="0:45:00"
@@ -302,11 +316,11 @@ function tpl_endurance(s = null, default_type = 'run') {
       </label>
     </div>
     <div class="grid">
-      <label>Höhenmeter (m)
+      <label id="en-elev-field" ${swim ? 'hidden' : ''}>Höhenmeter (m)
         <input type="number" name="elevation_m" step="1" min="0"
                value="${s && s.elevation_m != null ? s.elevation_m : ''}">
       </label>
-      <label>Ø Herzfrequenz (bpm)
+      <label>Ø Herzfrequenz (bpm, optional)
         <input type="number" name="avg_hr" step="1" min="0"
                value="${s && s.avg_hr != null ? s.avg_hr : ''}">
       </label>
@@ -439,11 +453,21 @@ function _workout_card(s) {
   </article>`;
 }
 
+const ENDURANCE_LABELS = { run: '🏃 Lauf', ride: '🚴 Radfahrt', swim: '🏊 Schwimmen' };
+
 function _endurance_card(s) {
-  const is_run        = s.activity_type === 'run';
-  const label         = is_run ? '🏃 Lauf' : '🚴 Radfahrt';
-  const derived       = is_run ? fmt_pace(s.distance_km, s.duration_s) : fmt_speed(s.distance_km, s.duration_s);
-  const derived_label = is_run ? 'Pace' : 'Tempo';
+  const type  = s.activity_type;
+  const label = ENDURANCE_LABELS[type] || type;
+  const derived_label = type === 'ride' ? 'Tempo' : 'Pace';
+  const derived = type === 'run'  ? fmt_pace(s.distance_km, s.duration_s)
+                : type === 'swim' ? fmt_pace100(s.distance_km, s.duration_s)
+                :                   fmt_speed(s.distance_km, s.duration_s);
+  const dist = type === 'swim'
+    ? opt(s.distance_km != null ? Math.round(s.distance_km * 1000) : null, ' m')
+    : opt(s.distance_km, ' km');
+  // No Höhenmeter column for swimming
+  const elev_th = type === 'swim' ? '' : '<th>Höhenmeter</th>';
+  const elev_td = type === 'swim' ? '' : `<td>${opt(s.elevation_m, ' m')}</td>`;
   return `
   <article>
     <header>
@@ -463,13 +487,13 @@ function _endurance_card(s) {
         <tbody>
           <tr>
             <th>Distanz</th><th>Zeit</th><th>${derived_label}</th>
-            <th>Höhenmeter</th><th>Ø HR</th><th>kcal</th><th>Kommentar</th>
+            ${elev_th}<th>Ø HR</th><th>kcal</th><th>Kommentar</th>
           </tr>
           <tr>
-            <td>${opt(s.distance_km, ' km')}</td>
+            <td>${dist}</td>
             <td>${fmt_duration(s.duration_s)}</td>
             <td>${derived}</td>
-            <td>${opt(s.elevation_m, ' m')}</td>
+            ${elev_td}
             <td>${opt(s.avg_hr, ' bpm')}</td>
             <td>${opt(s.kcal)}</td>
             <td>${s.comment ? esc(s.comment) : '---'}</td>
@@ -521,6 +545,7 @@ function open_new_activity() {
       <button onclick="close_modal(); setTimeout(open_new_workout, 0)">💪 Kraft-Training</button>
       <button onclick="close_modal(); setTimeout(() => open_new_endurance('run'),  0)">🏃 Lauf</button>
       <button onclick="close_modal(); setTimeout(() => open_new_endurance('ride'), 0)">🚴 Radfahrt</button>
+      <button onclick="close_modal(); setTimeout(() => open_new_endurance('swim'), 0)">🏊 Schwimmen</button>
       <button onclick="close_modal(); setTimeout(open_new_sport, 0)">⚽ Hobby-Sport</button>
     </div>
     <div class="form-footer" style="margin-top:1rem">
@@ -794,13 +819,26 @@ async function load_endurance() {
   }
 }
 
+// Swap the distance unit hint and hide Höhenmeter when the type is switched
+// to swimming inside the form.
+function on_endurance_type_change(sel) {
+  const form = sel.closest('form');
+  const swim = sel.value === 'swim';
+  form.querySelector('#en-dist-label').textContent = `Distanz (${swim ? 'm' : 'km'})`;
+  form.querySelector('#en-elev-field').hidden = swim;
+  form.querySelector('[name="distance_km"]').step = swim ? 1 : 0.01;
+}
+
 function _parse_endurance_form(data) {
+  const swim = data.activity_type === 'swim';
+  const dist = data.distance_km ? parseFloat(data.distance_km) : null;
   return {
     date:          data.date,
     activity_type: data.activity_type,
-    distance_km:   data.distance_km ? parseFloat(data.distance_km) : null,
+    // swimming is entered in metres, stored in km like everything else
+    distance_km:   dist != null ? (swim ? dist / 1000 : dist) : null,
     duration_s:    parse_duration(data.duration_str),
-    elevation_m:   data.elevation_m ? parseFloat(data.elevation_m) : null,
+    elevation_m:   swim ? null : (data.elevation_m ? parseFloat(data.elevation_m) : null),
     avg_hr:        data.avg_hr      ? parseInt(data.avg_hr)         : null,
     kcal:          data.kcal        ? parseFloat(data.kcal)         : null,
     comment:       data.comment     || null,
@@ -808,7 +846,7 @@ function _parse_endurance_form(data) {
 }
 
 function open_new_endurance(default_type = 'run') {
-  const title = default_type === 'run' ? 'Neuer Lauf' : 'Neue Radfahrt';
+  const title = { run: 'Neuer Lauf', ride: 'Neue Radfahrt', swim: 'Neues Schwimmen' }[default_type] || 'Neue Aktivität';
   open_modal(title, tpl_endurance(null, default_type), async data => {
     await api('POST', '/api/endurance', _parse_endurance_form(data));
     await load_endurance();
@@ -827,7 +865,7 @@ function open_edit_endurance(id) {
 async function del_endurance(id) {
   const s = endurance.find(e => e.id === id);
   if (!s) return;
-  const label = s.activity_type === 'run' ? 'Lauf' : 'Radfahrt';
+  const label = { run: 'Lauf', ride: 'Radfahrt', swim: 'Schwimmen' }[s.activity_type] || 'Aktivität';
   if (!confirm(`${label} vom ${s.date} löschen?`)) return;
   await api('DELETE', `/api/endurance/${id}`);
   await load_endurance();
@@ -965,7 +1003,7 @@ function on_food_name_change(input) {
     if (unit_sel) {
       // Preselect the food's own unit — for foods like eggs "2 Stk." is the
       // natural entry; grams remain one click away.
-      const prefer = (food.unit_name && food.unit_grams) ? food.unit_name : 'g';
+      const prefer = food.unit_name || 'g';
       unit_sel.innerHTML = _unit_options_html(food, prefer);
     }
     if (badge) { badge.className = 'food-badge match'; badge.textContent = '✓'; }
@@ -1144,22 +1182,91 @@ function open_targets_modal() {
   });
 }
 
-// Soll/Ist balance row for one day. kcal is a LIMIT (over = bad), protein a
-// GOAL (reached = good).
+// ─── Catalog sync via shared folder (e.g. OneDrive) ───────────────────────
+
+function open_sync_modal() {
+  open_modal('Katalog-Sync', `<form>
+    <p style="font-size:.9rem;color:var(--pico-muted-color);margin-bottom:.75rem">
+      Teilt <strong>Lebensmittel, Rezepte und Übungen</strong> über einen gemeinsamen
+      Ordner (z.B. OneDrive/Dropbox). Tagebuch, Workouts und Körperdaten bleiben privat.
+      Fehlende Einträge werden übernommen, bestehende nie überschrieben.
+    </p>
+    <label>Pfad zum gemeinsamen Ordner
+      <input type="text" name="sync_dir" value="${esc(settings.sync_dir || '')}"
+             placeholder="z.B. C:\\Users\\du\\OneDrive\\fitrack-shared">
+      <small style="color:var(--pico-muted-color)">Leer lassen, solange noch kein Ordner eingerichtet ist.</small>
+    </label>
+    <div id="sync-result" style="font-size:.9rem;margin:.5rem 0"></div>
+    <div class="form-footer">
+      <button type="button" class="secondary outline" onclick="close_modal()">Schließen</button>
+      <button type="button" class="secondary" style="width:auto"
+              onclick="run_catalog_sync(true)">Speichern &amp; jetzt synchronisieren</button>
+    </div>
+  </form>`, null);
+}
+
+async function run_catalog_sync(from_modal = false) {
+  if (from_modal) {
+    const dir = document.querySelector('#modal-body [name="sync_dir"]').value.trim();
+    await api('PUT', '/api/settings', { sync_dir: dir || null });
+    await load_settings();
+    if (!dir) {
+      document.getElementById('sync-result').textContent = 'Kein Ordner konfiguriert — Pfad gespeichert (leer).';
+      return;
+    }
+  }
+  const res = await api('POST', '/api/sync/run');
+  const out = document.getElementById('sync-result');
+  if (!res.ok) {
+    if (out) { out.textContent = '⚠ ' + res.error; out.style.color = 'var(--pico-del-color)'; }
+    return res;
+  }
+  const a = res.added;
+  const summary = `✓ Sync ok — übernommen: ${a.foods} Lebensmittel, ${a.recipes} Rezept(e), `
+    + `${a.exercises} Übung(en)${res.peers.length ? ` (von: ${res.peers.join(', ')})` : ' (noch keine Partner-Datei)'}`;
+  if (out) { out.textContent = summary; out.style.color = 'inherit'; }
+  if (a.foods || a.recipes || a.exercises) {
+    await Promise.all([load_foods_db(), load_exercise_catalog()]);
+    recipes = await api('GET', '/api/recipes');
+    render_recipes();
+  }
+  return res;
+}
+
+// Silent auto-sync on startup when a shared folder is configured — the whole
+// point is that neither user has to think about it.
+async function auto_sync_on_start() {
+  try {
+    const st = await api('GET', '/api/sync/status');
+    if (st.dir_exists) await run_catalog_sync(false);
+  } catch (e) { console.warn('Auto-Sync übersprungen:', e.message); }
+}
+
+// Soll/Ist balance row for one day.
+// Colors by relative deviation from the target: within ±5% green, within
+// ±15% orange, outside red. Protein: anything ABOVE target is always green
+// (it's a goal, not a limit); below target the same bands apply.
+function _target_band(actual, target, above_is_ok) {
+  const dev = (actual - target) / target;
+  if (above_is_ok && dev >= 0) return 'target-ok';
+  const a = Math.abs(dev);
+  return a <= 0.05 ? 'target-ok' : a <= 0.15 ? 'target-warn' : 'target-bad';
+}
+
 function _target_row_html(dk, dp) {
   const kcal_t = parseFloat(settings.kcal_target);
   const prot_t = parseFloat(settings.protein_target);
   if (isNaN(kcal_t) && isNaN(prot_t)) return '';
   let kcal_cell = '', prot_cell = '';
-  if (!isNaN(kcal_t)) {
+  if (!isNaN(kcal_t) && kcal_t > 0) {
     const diff = Math.round(kcal_t - dk);
-    const cls  = diff >= 0 ? 'target-ok' : 'target-over';
+    const cls  = _target_band(dk, kcal_t, false);
     kcal_cell  = `<span class="${cls}">${diff >= 0 ? diff + ' übrig' : (-diff) + ' drüber'}</span>
                   <small>/ ${Math.round(kcal_t)}</small>`;
   }
-  if (!isNaN(prot_t)) {
+  if (!isNaN(prot_t) && prot_t > 0) {
     const diff = dp - prot_t;
-    const cls  = diff >= 0 ? 'target-ok' : 'target-under';
+    const cls  = _target_band(dp, prot_t, true);
     prot_cell  = `<span class="${cls}">${diff >= 0 ? 'erreicht ✓' : (-diff).toFixed(0) + 'g fehlen'}</span>
                   <small>/ ${Math.round(prot_t)}g</small>`;
   }
@@ -1258,31 +1365,38 @@ function render_foods_db() {
     return;
   }
   const sorted = [...foods_db].sort((a, b) => a.name.localeCompare(b.name));
-  const focus_badge = f => {
-    if (!f.focus) return '';
-    const label = { kcal: 'K', protein: 'P', beides: 'K+P' }[f.focus] || '';
-    const title = { kcal: 'Kaloriensensitiv', protein: 'Proteinsensitiv', beides: 'Kalorien- & proteinsensitiv' }[f.focus] || '';
-    return ` <span class="food-badge match" title="${title}">${label}</span>`;
+  const category_badge = f => {
+    if (!f.category || f.category === 'standard') return '';
+    const cfg = {
+      kalorien: { label: 'K', title: 'Kalorienfokus',                          cls: 'match' },
+      protein:  { label: 'P', title: 'Proteinquelle',                          cls: 'match' },
+      nebenbei: { label: '≈', title: 'Nebenbei — grobe Schätzung reicht',      cls: 'skip'  },
+    }[f.category];
+    return cfg ? ` <span class="food-badge ${cfg.cls}" title="${cfg.title}">${cfg.label}</span>` : '';
   };
-  const density_badge = f => f.energy_density === 'gering'
-    ? ' <span class="food-badge skip" title="Geringe Energiedichte — grobe Schätzung">≈</span>' : '';
   el.innerHTML = add_btn + `<figure><table>
     <thead><tr>
-      <th>Lebensmittel</th><th>kcal/100g</th><th>Eiweiß</th><th>KH</th><th>Fett</th><th>Einheit</th><th></th>
+      <th>Lebensmittel</th><th>Basis</th><th>kcal</th><th>Eiweiß</th><th>KH</th><th>Fett</th><th></th>
     </tr></thead>
-    <tbody>${sorted.map(f => `
+    <tbody>${sorted.map(f => {
+      // Unit-based foods are shown per 1 unit (their entry basis), others per 100 g
+      const fac   = f.unit_name ? (f.unit_grams || 100) / 100 : 1;
+      const basis = f.unit_name
+        ? `1 ${esc(f.unit_name)}${f.unit_grams ? ` (${f.unit_grams}&thinsp;g)` : ''}`
+        : '100 g';
+      return `
       <tr>
-        <td>${esc(f.name)}${focus_badge(f)}${density_badge(f)}</td>
-        <td>${f.kcal_per_100g.toFixed(1)}</td>
-        <td>${f.protein_per_100g.toFixed(1)}g</td>
-        <td>${f.carbs_per_100g.toFixed(1)}g</td>
-        <td>${f.fat_per_100g.toFixed(1)}g</td>
-        <td>${f.unit_name && f.unit_grams ? `${esc(f.unit_name)} = ${f.unit_grams} g` : '&ndash;'}</td>
+        <td>${esc(f.name)}${category_badge(f)}</td>
+        <td style="white-space:nowrap">${basis}</td>
+        <td>${(f.kcal_per_100g * fac).toFixed(1)}</td>
+        <td>${(f.protein_per_100g * fac).toFixed(1)}g</td>
+        <td>${(f.carbs_per_100g * fac).toFixed(1)}g</td>
+        <td>${(f.fat_per_100g * fac).toFixed(1)}g</td>
         <td class="row-actions">
           <button class="outline secondary" onclick="open_edit_food(${f.id})">&#9998;</button>
           <button class="outline contrast"  onclick="del_food(${f.id})">&#10005;</button>
         </td>
-      </tr>`).join('')}
+      </tr>`;}).join('')}
     </tbody>
   </table></figure>`;
 }
@@ -1500,36 +1614,47 @@ async function apply_recipe_to_meal() {
 }
 
 
+// Units offered for "Nährwerte je …". Grams are the canonical storage unit;
+// everything else is a serving unit whose weight MAY be given (optional).
+const FOOD_UNITS = ['g', 'Stk.', 'Scheibe', 'Handvoll', 'EL', 'TL', 'Portion'];
+
 function _food_modal_body(f) {
-  const name    = f ? esc(f.name)              : '';
-  const kcal    = f ? f.kcal_per_100g    : '';
-  const protein = f ? f.protein_per_100g : '';
-  const carbs   = f ? f.carbs_per_100g   : '';
-  const fat     = f ? f.fat_per_100g     : '';
+  const name    = f ? esc(f.name) : '';
+  const has_unit = !!(f && f.unit_name);
+  // Editing a unit-based food: show the macros per 1 unit (that's how they
+  // were entered), derived from the stored per-100g values.
+  const to_unit = v => has_unit ? Math.round(v * ((f.unit_grams || 100) / 100) * 100) / 100 : v;
+  const kcal    = f ? to_unit(f.kcal_per_100g)    : '';
+  const protein = f ? to_unit(f.protein_per_100g) : '';
+  const carbs   = f ? to_unit(f.carbs_per_100g)   : '';
+  const fat     = f ? to_unit(f.fat_per_100g)     : '';
+  const cur_unit = has_unit ? f.unit_name : 'g';
+  const unit_opts = FOOD_UNITS.map(u =>
+    `<option value="${u}" ${u === cur_unit ? 'selected' : ''}>${u}</option>`).join('')
+    + (FOOD_UNITS.includes(cur_unit) ? '' : `<option value="${esc(cur_unit)}" selected>${esc(cur_unit)}</option>`);
   return `<form>
     <label>Name<input type="text" name="name" value="${name}" required></label>
     <label style="font-weight:600">Nährwerte je
-      <input type="number" name="per_g" value="100" min="1" step="1"
+      <input type="number" name="per_g" value="${has_unit ? 1 : 100}" min="0.1" step="any"
              style="display:inline-block;width:5rem;margin:0 .4rem"
-             oninput="update_per_g_label(this)">
-      g <span id="per-g-hint" style="font-weight:normal;color:var(--pico-muted-color);font-size:.85rem"></span>
+             oninput="update_per_g_label()">
+      <select name="per_unit" onchange="on_per_unit_change(this)"
+              style="display:inline-block;width:auto;margin:0 .4rem;padding:.2rem 1.6rem .2rem .5rem">${unit_opts}</select>
+      <span id="per-g-hint" style="font-weight:normal;color:var(--pico-muted-color);font-size:.85rem"></span>
     </label>
-    <div class="grid">
-      <label>Energiedichte
-        <select name="energy_density" onchange="on_density_change(this)">
-          <option value="hoch"   ${!f || f.energy_density !== 'gering' ? 'selected' : ''}>Hoch — genaue Angaben</option>
-          <option value="gering" ${f && f.energy_density === 'gering' ? 'selected' : ''}>Gering — grobe Schätzung reicht</option>
-        </select>
-      </label>
-      <label>Fokus
-        <select name="focus">
-          <option value=""        ${!f || !f.focus ? 'selected' : ''}>—</option>
-          <option value="kcal"    ${f && f.focus === 'kcal'    ? 'selected' : ''}>Kaloriensensitiv</option>
-          <option value="protein" ${f && f.focus === 'protein' ? 'selected' : ''}>Proteinsensitiv</option>
-          <option value="beides"  ${f && f.focus === 'beides'  ? 'selected' : ''}>Beides</option>
-        </select>
-      </label>
-    </div>
+    <label id="unit-weight-field" ${has_unit ? '' : 'hidden'}>Gewicht je Einheit (g, optional)
+      <input type="number" name="unit_weight" step="0.1" min="0"
+             value="${f && f.unit_grams != null ? f.unit_grams : ''}"
+             placeholder="leer = unbekannt, Angaben bleiben je Einheit">
+    </label>
+    <label>Kategorie
+      <select name="category" onchange="on_category_change(this)">
+        <option value="standard" ${!f || !f.category || f.category === 'standard' ? 'selected' : ''}>Standard — genaue Angaben</option>
+        <option value="kalorien" ${f && f.category === 'kalorien' ? 'selected' : ''}>Kalorienfokus — energiedicht, Kalorien zählen</option>
+        <option value="protein"  ${f && f.category === 'protein'  ? 'selected' : ''}>Proteinquelle — Eiweißbedarf decken</option>
+        <option value="nebenbei" ${f && f.category === 'nebenbei' ? 'selected' : ''}>Nebenbei — geringe Energiedichte, Schätzung reicht</option>
+      </select>
+    </label>
     <div class="grid">
       <label>kcal<input type="number" name="kcal" step="0.01" value="${kcal}" required></label>
       <label>Eiweiß (g)<input type="number" name="protein" step="0.01" value="${protein}" required></label>
@@ -1538,19 +1663,6 @@ function _food_modal_body(f) {
       <label>KH (g)<input type="number" name="carbs" step="0.01" value="${carbs}" required></label>
       <label>Fett (g)<input type="number" name="fat" step="0.01" value="${fat}" required></label>
     </div>
-    <div class="grid">
-      <label>Einheit (optional)
-        <input type="text" name="unit_name" value="${f && f.unit_name ? esc(f.unit_name) : ''}"
-               placeholder="z.B. Stk., Handvoll" list="units-datalist">
-        <datalist id="units-datalist">
-          <option value="Stk."><option value="Handvoll"><option value="EL"><option value="TL"><option value="Scheibe">
-        </datalist>
-      </label>
-      <label>Gramm pro Einheit
-        <input type="number" name="unit_grams" step="0.1" min="0"
-               value="${f && f.unit_grams != null ? f.unit_grams : ''}" placeholder="z.B. 60">
-      </label>
-    </div>
     <div class="form-footer">
       <button type="button" class="secondary outline" onclick="close_modal()">Abbrechen</button>
       <button type="submit">Speichern</button>
@@ -1558,47 +1670,69 @@ function _food_modal_body(f) {
   </form>`;
 }
 
-function update_per_g_label(input) {
-  const g = parseFloat(input.value);
-  const hint = document.getElementById('per-g-hint');
-  if (!hint) return;
-  hint.textContent = (!isNaN(g) && g !== 100) ? `(wird auf 100g umgerechnet)` : '';
+function on_per_unit_change(sel) {
+  const form = sel.closest('form');
+  form.querySelector('#unit-weight-field').hidden = (sel.value === 'g');
+  update_per_g_label();
 }
 
-// Geringe Energiedichte → exact macros don't matter; grey the fields out
-// (values are kept, just no longer meant to be fine-tuned).
-function on_density_change(sel) {
-  const form   = sel.closest('form');
-  const gering = sel.value === 'gering';
+function update_per_g_label() {
+  const hint = document.getElementById('per-g-hint');
+  const form = hint && hint.closest('form');
+  if (!form) return;
+  const x    = parseFloat(form.querySelector('[name="per_g"]').value);
+  const unit = form.querySelector('[name="per_unit"]').value;
+  if (unit === 'g') {
+    hint.textContent = (!isNaN(x) && x !== 100) ? '(wird auf 100 g umgerechnet)' : '';
+  } else {
+    hint.textContent = '(gespeichert je Einheit)';
+  }
+}
+
+// "Nebenbei" (low energy density) → exact macros don't matter; dim the fields
+// as a visual cue but keep them fully editable — rough values are welcome.
+function on_category_change(sel) {
+  const form     = sel.closest('form');
+  const nebenbei = sel.value === 'nebenbei';
   ['kcal', 'protein', 'carbs', 'fat'].forEach(n => {
     const inp = form.querySelector(`[name="${n}"]`);
-    if (gering && inp.value === '') inp.value = 0;   // satisfy `required`
-    inp.readOnly = gering;
-    inp.classList.toggle('macro-auto', gering);
+    if (nebenbei && inp.value === '') inp.value = 0;   // satisfy `required`
+    inp.classList.toggle('macro-dim', nebenbei);
   });
 }
 
 function _food_macros_from_form(data) {
-  const per_g  = parseFloat(data.per_g) || 100;
-  const factor = 100 / per_g;
-  const unit_name  = (data.unit_name || '').trim();
-  const unit_grams = parseFloat(data.unit_grams);
+  const num  = v => { const f = parseFloat(v); return isNaN(f) ? 0 : f; };
+  const unit = data.per_unit || 'g';
+  let factor, unit_name = null, unit_grams = null;
+  if (unit === 'g') {
+    const x = parseFloat(data.per_g) || 100;
+    factor  = 100 / x;
+  } else {
+    // Macros were entered per X units. If the unit weight is unknown we
+    // normalise against a virtual 100 g per unit — meal entries in this unit
+    // use the same basis (see _row_grams), so all math stays consistent.
+    const x = parseFloat(data.per_g) || 1;
+    const w = parseFloat(data.unit_weight);
+    unit_name  = unit;
+    unit_grams = (!isNaN(w) && w > 0) ? w : null;
+    factor     = 100 / (x * (unit_grams || 100));
+  }
   return {
     name:             data.name,
-    kcal_per_100g:    parseFloat(data.kcal)    * factor,
-    protein_per_100g: parseFloat(data.protein) * factor,
-    carbs_per_100g:   parseFloat(data.carbs)   * factor,
-    fat_per_100g:     parseFloat(data.fat)      * factor,
-    unit_name:        unit_name && !isNaN(unit_grams) && unit_grams > 0 ? unit_name : null,
-    unit_grams:       unit_name && !isNaN(unit_grams) && unit_grams > 0 ? unit_grams : null,
-    energy_density:   data.energy_density || 'hoch',
-    focus:            data.focus || null,
+    kcal_per_100g:    num(data.kcal)    * factor,
+    protein_per_100g: num(data.protein) * factor,
+    carbs_per_100g:   num(data.carbs)   * factor,
+    fat_per_100g:     num(data.fat)      * factor,
+    unit_name,
+    unit_grams,
+    category:         data.category || 'standard',
   };
 }
 
 function _init_density_state() {
-  const sel = document.querySelector('#modal-body [name="energy_density"]');
-  if (sel) on_density_change(sel);
+  const sel = document.querySelector('#modal-body [name="category"]');
+  if (sel) on_category_change(sel);
 }
 
 function open_new_food() {
@@ -1722,20 +1856,22 @@ async function open_new_meal_for(date) {
 // unit (e.g. "Stk.") when one is defined in the foods DB.
 function _unit_options_html(food, selected = 'g') {
   let opts = `<option value="g" ${selected === 'g' ? 'selected' : ''}>g</option>`;
-  if (food && food.unit_name && food.unit_grams) {
+  if (food && food.unit_name) {
     opts += `<option value="${esc(food.unit_name)}" ${selected === food.unit_name ? 'selected' : ''}>${esc(food.unit_name)}</option>`;
   }
   return opts;
 }
 
 // Amount of a row in grams, regardless of the unit it was entered in.
+// Foods whose unit weight is unknown use a virtual 100 g per unit — the same
+// basis their per-100g macros were normalised against, so results are exact.
 function _row_grams(row) {
   const val = parseFloat(row.querySelector('[name="amount_grams"]').value);
   if (isNaN(val)) return NaN;
   const unit = row.querySelector('[name="unit"]').value;
   if (unit === 'g') return val;
   const ug = parseFloat(row.dataset.unitGrams);
-  return isNaN(ug) ? NaN : val * ug;
+  return val * (isNaN(ug) ? 100 : ug);
 }
 
 function on_unit_change(sel) {
@@ -2575,7 +2711,7 @@ function _attach_chart_hover(svg, px, unit, single) {
 load_workouts();
 load_endurance();
 load_sports();
-load_settings().then(load_meals);   // targets must be known before rendering days
+load_settings().then(load_meals).then(auto_sync_on_start);   // targets before rendering; sync after
 load_exercise_catalog();
 _init_photo_dropzone();
 // foods_db / body / analysis data loaded on demand when their tab is opened
