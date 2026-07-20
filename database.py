@@ -314,10 +314,47 @@ def _migrate_add_exercise_catalog(conn: sqlite3.Connection) -> None:
             last_used_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
         )
     """)
-    # Add comment column if upgrading from an earlier schema
+    # Add columns if upgrading from an earlier schema
     existing = {r[1] for r in conn.execute("PRAGMA table_info(exercise_catalog)").fetchall()}
     if "comment" not in existing:
         conn.execute("ALTER TABLE exercise_catalog ADD COLUMN comment TEXT")
+    if "muscles" not in existing:
+        conn.execute("ALTER TABLE exercise_catalog ADD COLUMN muscles TEXT")   # e.g. 'Brust, Trizeps'
+    # "pro Seite" is a property of the exercise itself (dumbbells etc.), not of
+    # each logged set — the volume chart doubles it for the real load.
+    if "per_hand" not in existing:
+        conn.execute("ALTER TABLE exercise_catalog ADD COLUMN per_hand INTEGER NOT NULL DEFAULT 0")
+        we_cols = {r[1] for r in conn.execute("PRAGMA table_info(workout_exercises)").fetchall()}
+        if "per_hand" in we_cols:
+            # carry over flags that were previously set on individual entries
+            conn.execute(
+                "UPDATE exercise_catalog SET per_hand=1 WHERE name IN "
+                "(SELECT DISTINCT exercise_name FROM workout_exercises WHERE per_hand=1)"
+            )
+    # drop the obsolete per-entry column
+    we_cols = {r[1] for r in conn.execute("PRAGMA table_info(workout_exercises)").fetchall()}
+    if "per_hand" in we_cols:
+        conn.execute("ALTER TABLE workout_exercises DROP COLUMN per_hand")
+    # Training plans: reusable workout templates
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS training_plans (
+            id   INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT    NOT NULL UNIQUE
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS training_plan_items (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            plan_id       INTEGER NOT NULL REFERENCES training_plans(id) ON DELETE CASCADE,
+            exercise_name TEXT    NOT NULL,
+            sets          INTEGER NOT NULL,
+            reps_str      TEXT    NOT NULL,
+            weight_str    TEXT,
+            weight_unit   TEXT    NOT NULL DEFAULT 'kg',
+            per_hand      INTEGER NOT NULL DEFAULT 0,
+            sort_order    INTEGER NOT NULL DEFAULT 0
+        )
+    """)
     # Seed from distinct names already used in workouts (first run only)
     count = conn.execute("SELECT COUNT(*) FROM exercise_catalog").fetchone()[0]
     if count == 0:
@@ -547,31 +584,42 @@ def _single_to_weight_array(weight: float | None, sets: int) -> str | None:
 def get_all_exercises() -> list[dict]:
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT id, name, comment FROM exercise_catalog ORDER BY name"
+            "SELECT id, name, comment, muscles, per_hand FROM exercise_catalog ORDER BY name"
         ).fetchall()
     return [dict(r) for r in rows]
 
 
-def upsert_exercise(name: str, comment: str | None = None) -> int:
-    """Insert an exercise name into the catalog (keeps existing comment if any)."""
+def upsert_exercise(name: str, comment: str | None = None, muscles: str | None = None,
+                    per_hand: bool | None = None) -> int:
+    """Insert an exercise name into the catalog (keeps existing attributes if any).
+
+    per_hand is only written when explicitly given, so auto-registration from a
+    workout entry never resets the flag set in the exercise editor."""
     name = name.strip()
     now = _now()
     with _connect() as conn:
         conn.execute("""
-            INSERT INTO exercise_catalog (name, comment, created_at, last_used_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO exercise_catalog (name, comment, muscles, created_at, last_used_at)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(name) DO UPDATE SET
                 last_used_at = excluded.last_used_at,
-                comment      = COALESCE(excluded.comment, exercise_catalog.comment)
-        """, (name, comment, now, now))
+                comment      = COALESCE(excluded.comment, exercise_catalog.comment),
+                muscles      = COALESCE(excluded.muscles, exercise_catalog.muscles)
+        """, (name, comment, muscles, now, now))
+        if per_hand is not None:
+            conn.execute(
+                "UPDATE exercise_catalog SET per_hand=? WHERE name=? COLLATE NOCASE",
+                (int(per_hand), name),
+            )
         row = conn.execute(
             "SELECT id FROM exercise_catalog WHERE name=? COLLATE NOCASE", (name,)
         ).fetchone()
     return row["id"]
 
 
-def update_exercise_catalog(exercise_id: int, name: str, comment: str | None) -> None:
-    """Rename a catalog entry, set its comment, and propagate the rename to workouts."""
+def update_exercise_catalog(exercise_id: int, name: str, comment: str | None,
+                            muscles: str | None = None, per_hand: bool = False) -> None:
+    """Rename a catalog entry, set its attributes, and propagate the rename to workouts."""
     name = name.strip()
     with _connect() as conn:
         old = conn.execute(
@@ -579,8 +627,8 @@ def update_exercise_catalog(exercise_id: int, name: str, comment: str | None) ->
         ).fetchone()
         old_name = old["name"] if old else name
         conn.execute(
-            "UPDATE exercise_catalog SET name=?, comment=? WHERE id=?",
-            (name, comment, exercise_id),
+            "UPDATE exercise_catalog SET name=?, comment=?, muscles=?, per_hand=? WHERE id=?",
+            (name, comment, muscles, int(per_hand), exercise_id),
         )
         conn.execute(
             "UPDATE workout_exercises SET exercise_name=? WHERE exercise_name=? COLLATE NOCASE",
@@ -1041,15 +1089,56 @@ def delete_body_photo(photo_id: int) -> str | None:
     return row["filename"] if row else None
 
 
+# ── Training plans ─────────────────────────────────────────────────────────
+# Reusable workout templates: exercise + sets/reps/weight as entered in the UI.
+
+def get_all_training_plans() -> list[dict]:
+    with _connect() as conn:
+        plans = [dict(r) for r in conn.execute("SELECT * FROM training_plans ORDER BY name").fetchall()]
+        for p in plans:
+            p["items"] = [dict(i) for i in conn.execute(
+                "SELECT * FROM training_plan_items WHERE plan_id=? ORDER BY sort_order, id",
+                (p["id"],)
+            ).fetchall()]
+    return plans
+
+
+def upsert_training_plan(plan_id: int | None, name: str, items: list[dict]) -> int:
+    """Create (plan_id=None) or replace a training plan with the given items."""
+    with _connect() as conn:
+        if plan_id is None:
+            cur = conn.execute("INSERT INTO training_plans (name) VALUES (?)", (name.strip(),))
+            pid = cur.lastrowid
+        else:
+            conn.execute("UPDATE training_plans SET name=? WHERE id=?", (name.strip(), plan_id))
+            pid = plan_id
+        conn.execute("DELETE FROM training_plan_items WHERE plan_id=?", (pid,))
+        for i, item in enumerate(items):
+            conn.execute("""
+                INSERT INTO training_plan_items
+                    (plan_id, exercise_name, sets, reps_str, weight_str, weight_unit, per_hand, sort_order)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (pid, item["exercise_name"], item["sets"], item["reps_str"],
+                  item.get("weight_str"), item.get("weight_unit", "kg"),
+                  int(item.get("per_hand", False)), i))
+    return pid
+
+
+def delete_training_plan(plan_id: int) -> None:
+    with _connect() as conn:
+        conn.execute("DELETE FROM training_plan_items WHERE plan_id=?", (plan_id,))
+        conn.execute("DELETE FROM training_plans WHERE id=?", (plan_id,))
+
+
 # ── Catalog sync (shared folder) ───────────────────────────────────────────
-# Shared between users: foods, recipes, exercise catalog. Diaries stay local.
+# Shared between users: foods and recipes ONLY. Exercises, plans and all
+# diaries stay local/personal.
 
 def get_catalogs_export() -> dict:
     return {
         "exported_at": _now(),
-        "foods":     get_all_foods(),
-        "recipes":   get_all_recipes(),
-        "exercises": get_all_exercises(),
+        "foods":   get_all_foods(),
+        "recipes": get_all_recipes(),
     }
 
 
@@ -1057,10 +1146,9 @@ def merge_catalogs(data: dict) -> dict:
     """Merge a peer's catalog export into the local DB.
 
     Conservative rules: entries missing locally are added; existing local
-    entries are never overwritten (no clobbering hand-tuned values). Exercise
-    comments are filled in when the local one is empty. Deletions are not
-    propagated."""
-    added = {"foods": 0, "recipes": 0, "exercises": 0}
+    entries are never overwritten (no clobbering hand-tuned values).
+    Deletions are not propagated. Exercises in old peer files are ignored."""
+    added = {"foods": 0, "recipes": 0}
 
     for f in data.get("foods", []):
         if not f.get("name"):
@@ -1081,19 +1169,6 @@ def merge_catalogs(data: dict) -> dict:
                  for i in r.get("items", []) if i.get("food_name")]
         upsert_recipe(None, r["name"], items)
         added["recipes"] += 1
-
-    local_ex = {e["name"].lower(): e for e in get_all_exercises()}
-    for e in data.get("exercises", []):
-        name = (e.get("name") or "").strip()
-        if not name:
-            continue
-        existing = local_ex.get(name.lower())
-        if existing is None:
-            upsert_exercise(name, e.get("comment"))
-            added["exercises"] += 1
-        elif not existing.get("comment") and e.get("comment"):
-            # fill in a comment (e.g. YouTube link) we don't have yet
-            upsert_exercise(existing["name"], e["comment"])
 
     return added
 

@@ -331,6 +331,24 @@ input.macro-dim {
   height: 3px;
   border-radius: 2px;
 }
+/* ── Chart caption (visible axis/unit label) ── */
+.chart-caption {
+  margin: 0 0 .4rem;
+  font-size: .9rem;
+  color: var(--pico-muted-color);
+}
+
+/* ── Row drag & drop ── */
+.drag-handle {
+  cursor: grab;
+  color: var(--pico-muted-color);
+  font-size: .9rem;
+  margin-right: .15rem;
+  user-select: none;
+}
+tr.dragging { opacity: .45; }
+tr[draggable="true"] { cursor: default; }
+
 /* ── Daily targets (Soll/Ist) ──
    Deviation bands: ±5% green, ±15% orange, outside red
    (protein above target is always green). */

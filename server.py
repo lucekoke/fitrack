@@ -355,7 +355,7 @@ def sync_run():
         return {"ok": False, "error": f"Ordner nicht gefunden: {d}"}
 
     own_name = f"fitrack-catalogs-{_sync_host()}.json"
-    added = {"foods": 0, "recipes": 0, "exercises": 0}
+    added = {"foods": 0, "recipes": 0}
     peers = []
     for f in sorted(d.glob("fitrack-catalogs-*.json")):
         if f.name == own_name:
@@ -366,7 +366,7 @@ def sync_run():
             continue          # unreadable peer file — skip, never abort the sync
         c = db.merge_catalogs(data)
         for k in added:
-            added[k] += c[k]
+            added[k] += c.get(k, 0)
         peers.append(f.name)
 
     # Write own export AFTER merging so it already contains everything
@@ -388,6 +388,8 @@ def delete_food(food_id: int):
 class ExerciseCatalogIn(BaseModel):
     name: str
     comment: str | None = None
+    muscles: str | None = None      # trained muscles, e.g. 'Brust, Trizeps'
+    per_hand: bool = False          # weight is noted per side (dumbbells etc.)
 
 @app.get("/api/exercise-catalog")
 def get_exercise_catalog():
@@ -395,11 +397,43 @@ def get_exercise_catalog():
 
 @app.post("/api/exercise-catalog", status_code=201)
 def create_exercise_catalog(body: ExerciseCatalogIn):
-    return {"id": db.upsert_exercise(body.name, body.comment)}
+    return {"id": db.upsert_exercise(body.name, body.comment, body.muscles, body.per_hand)}
 
 @app.put("/api/exercise-catalog/{exercise_id}")
 def update_exercise_catalog(exercise_id: int, body: ExerciseCatalogIn):
-    db.update_exercise_catalog(exercise_id, body.name, body.comment)
+    db.update_exercise_catalog(exercise_id, body.name, body.comment, body.muscles, body.per_hand)
+    return {"ok": True}
+
+
+# ── Training plans ─────────────────────────────────────────────────────────
+
+class PlanItemIn(BaseModel):
+    exercise_name: str
+    sets: int
+    reps_str: str
+    weight_str: str | None = None
+    weight_unit: str = "kg"
+
+class PlanIn(BaseModel):
+    name: str
+    items: list[PlanItemIn] = []
+
+@app.get("/api/plans")
+def get_plans():
+    return db.get_all_training_plans()
+
+@app.post("/api/plans", status_code=201)
+def create_plan(body: PlanIn):
+    return {"id": db.upsert_training_plan(None, body.name, [i.model_dump() for i in body.items])}
+
+@app.put("/api/plans/{plan_id}")
+def update_plan(plan_id: int, body: PlanIn):
+    db.upsert_training_plan(plan_id, body.name, [i.model_dump() for i in body.items])
+    return {"ok": True}
+
+@app.delete("/api/plans/{plan_id}")
+def delete_plan(plan_id: int):
+    db.delete_training_plan(plan_id)
     return {"ok": True}
 
 @app.delete("/api/exercise-catalog/{exercise_id}")

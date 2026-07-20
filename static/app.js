@@ -8,6 +8,7 @@ let meals     = [];
 let foods_db  = [];
 let recipes   = [];
 let exercise_catalog = [];
+let training_plans   = [];
 
 // ─── API helper ───────────────────────────────────────────────────────────
 async function api(method, url, body) {
@@ -31,17 +32,18 @@ function fmt_reps(reps_json) {
   return unique.length === 1 ? String(reps[0]) : esc(reps.join(', '));
 }
 
-// Weight: "100.0 kg (220.5 lbs)"  or  "BW"
-function fmt_weight(wkg_json, wlbs_json) {
+// Weight: "100.0 kg (220.5 lbs)"  or  "BW"; per-hand weights marked "je Hand"
+function fmt_weight(wkg_json, wlbs_json, per_hand = false) {
   if (!wkg_json) return 'BW';
   const kg  = JSON.parse(wkg_json);
   const lbs = wlbs_json ? JSON.parse(wlbs_json) : null;
   const kg_s  = [...new Set(kg)].length  === 1 ? String(kg[0])  : kg.join(', ');
+  const hand  = per_hand ? ' <small>pro Seite</small>' : '';
   if (lbs) {
     const lbs_s = [...new Set(lbs)].length === 1 ? String(lbs[0]) : lbs.join(', ');
-    return `${kg_s}&thinsp;kg (${lbs_s}&thinsp;lbs)`;
+    return `${kg_s}&thinsp;kg (${lbs_s}&thinsp;lbs)${hand}`;
   }
-  return `${kg_s}&thinsp;kg`;
+  return `${kg_s}&thinsp;kg${hand}`;
 }
 
 function weight_to_input(w_json) {
@@ -130,6 +132,13 @@ function opt(val, suffix = '', fallback = '—') {
   return (val != null && val !== '') ? (val + suffix) : fallback;
 }
 
+// Today's date in LOCAL time (toISOString() is UTC and rolls over to the
+// next day in the evening for negative UTC offsets).
+function today_local() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 function esc(str) {
   return String(str)
     .replace(/&/g,  '&amp;')
@@ -173,11 +182,34 @@ function _focus_first_field(container) {
   if (el) el.focus();
 }
 
+// The shared <datalist> elements normally live on document.body — which the
+// browser marks INERT while a modal <dialog> is open. Picking an option from
+// an inert datalist can strand keyboard focus (inputs stop accepting text
+// until reload). Fix: move the datalists INTO the open dialog and rescue
+// them back to <body> before the dialog content is cleared on close.
+const _SHARED_DATALISTS = ['foods-datalist', 'exercises-datalist'];
+
+function _mount_datalists(container) {
+  _SHARED_DATALISTS.forEach(id => {
+    const dl = document.getElementById(id);
+    if (dl) container.appendChild(dl);
+  });
+}
+
+function _rescue_datalists() {
+  _SHARED_DATALISTS.forEach(id => {
+    const dl = document.getElementById(id);
+    if (dl && dl.parentElement !== document.body) document.body.appendChild(dl);
+  });
+}
+
 function open_modal(title, body_html, on_submit) {
   if (modal.open) modal.close();   // never call showModal() on an open dialog
+  _rescue_datalists();             // BEFORE the overwrite — innerHTML would destroy them
   document.getElementById('modal-title').textContent = title;
   const body = document.getElementById('modal-body');
   body.innerHTML = body_html;
+  _mount_datalists(body);
 
   const form = body.querySelector('form');
   if (form && on_submit) {
@@ -203,12 +235,19 @@ function open_modal(title, body_html, on_submit) {
   _focus_first_field(body);
 }
 
-function close_modal() { modal.close(); }
+// Cleanup is done IMPERATIVELY here (not only via the 'close' event, which
+// does not fire reliably in every environment): rescue the shared datalists,
+// then drop the stale content so no duplicate IDs / dead focus targets remain.
+function close_modal() {
+  _rescue_datalists();
+  modal.close();
+  document.getElementById('modal-body').innerHTML = '';
+}
 // Outside-click does NOT close the modal — prevents accidental closure while selecting text.
 
-// On close, drop the stale content: leaving the old form in the (hidden)
-// dialog keeps duplicate IDs in the DOM and can hold focus on dead elements.
+// Belt-and-braces for paths that call modal.close() directly (form submits):
 modal.addEventListener('close', () => {
+  _rescue_datalists();
   document.getElementById('modal-body').innerHTML = '';
 });
 
@@ -219,6 +258,7 @@ const modal2 = document.getElementById('modal2');
 
 function open_modal2(title, body_html) {
   if (modal2.open) modal2.close();
+  _rescue_datalists();
   document.getElementById('modal2-title').textContent = title;
   const body2 = document.getElementById('modal2-body');
   body2.innerHTML = body_html;
@@ -226,20 +266,26 @@ function open_modal2(title, body_html) {
   _focus_first_field(body2);
 }
 
-function close_modal2() { modal2.close(); }
+function close_modal2() {
+  _rescue_datalists();
+  modal2.close();
+  document.getElementById('modal2-body').innerHTML = '';
+  // Hand focus back to the underlying editor dialog if it is still open.
+  if (modal.open) _focus_first_field(document.getElementById('modal-body'));
+}
 
 modal2.addEventListener('close', () => {
   document.getElementById('modal2-body').innerHTML = '';
-  // Hand focus back to the underlying editor dialog if it is still open.
   if (modal.open) _focus_first_field(document.getElementById('modal-body'));
 });
 
 // ─── Form templates ───────────────────────────────────────────────────────
 
-function tpl_workout_session(date = '', comment = '') {
+function tpl_workout_session(date = '', comment = '', extra_html = '') {
   return `<form>
     <label>Datum<input type="date" name="date" value="${esc(date)}" required></label>
     <label>Kommentar (optional)<input type="text" name="comment" value="${esc(comment)}"></label>
+    ${extra_html}
     <div class="form-footer">
       <button type="button" class="secondary outline" onclick="close_modal()">Abbrechen</button>
       <button type="submit">Speichern</button>
@@ -256,7 +302,8 @@ function tpl_exercise(ex = null) {
     <label>Übung
       <input type="text" name="exercise_name" list="exercises-datalist"
              value="${ex ? esc(ex.exercise_name) : ''}"
-             placeholder="z.B. Bankdrücken" required>
+             placeholder="z.B. Bankdrücken" required
+             onchange="update_exercise_history(this.value)">
     </label>
     <div class="grid">
       <label>Sätze
@@ -269,7 +316,7 @@ function tpl_exercise(ex = null) {
       </label>
     </div>
     <label>Gewicht &mdash; leer = Bodyweight</label>
-    <div style="display:flex; gap:.5rem; align-items:center; margin-bottom:1rem">
+    <div style="display:flex; gap:.5rem; align-items:center; margin-bottom:.5rem">
       <input type="text" name="weight_str" value="${weight_val}"
              placeholder="100  oder  100,102.5,105,100"
              style="flex:1; width:auto; margin:0">
@@ -281,11 +328,53 @@ function tpl_exercise(ex = null) {
     <label>Kommentar (optional)
       <input type="text" name="comment" value="${ex ? esc(ex.comment || '') : ''}">
     </label>
+    <details id="ex-history-box" style="margin-bottom:1rem">
+      <summary style="cursor:pointer;font-size:.9rem;color:var(--pico-primary)">Verlauf dieser Übung</summary>
+      <div id="ex-history" style="font-size:.85rem;margin-top:.4rem"></div>
+    </details>
     <div class="form-footer">
       <button type="button" class="secondary outline" onclick="close_modal()">Abbrechen</button>
       <button type="submit">Speichern</button>
     </div>
   </form>`;
+}
+
+// "Gewichtsangabe" is a two-checkbox either/or: exactly one stays active.
+// per_hand=true ⇔ "pro Seite" checked.
+function _wmode_pick(cb) {
+  // scoped to the modal body so it works in the exercise editor (a plain div)
+  const root  = cb.closest('#modal-body') || document.getElementById('modal-body');
+  const side  = root.querySelector('[name="per_hand"]');
+  const total = root.querySelector('[name="wm_total"]');
+  if (cb === side) { side.checked = true;  total.checked = false; }
+  else             { total.checked = true; side.checked  = false; }
+}
+
+// Personal history of one exercise: when it was done and with which weights.
+function update_exercise_history(name) {
+  const el = document.getElementById('ex-history');
+  if (!el) return;
+  const clean = (name || '').trim().toLowerCase();
+  const rows = [];
+  for (const s of workouts) {                       // newest first already
+    for (const ex of s.exercises) {
+      if (ex.exercise_name.toLowerCase() !== clean) continue;
+      rows.push(`<tr>
+        <td style="white-space:nowrap">${esc(s.date)}</td>
+        <td>${ex.sets}×${fmt_reps(ex.reps_per_set)}</td>
+        <td>${fmt_weight(ex.weight_kg, ex.weight_lbs, _is_per_hand(ex.exercise_name))}</td>
+      </tr>`);
+    }
+  }
+  el.innerHTML = rows.length
+    ? `<figure style="margin:0"><table style="font-size:.85rem;margin:0">
+         <thead><tr><th>Datum</th><th>Sätze×Reps</th><th>Gewicht</th></tr></thead>
+         <tbody>${rows.slice(0, 10).join('')}</tbody>
+       </table></figure>${rows.length > 10 ? `<small style="color:var(--pico-muted-color)">… und ${rows.length - 10} ältere</small>` : ''}`
+    : '<p style="color:var(--pico-muted-color);margin:0">Noch keine Einträge für diese Übung.</p>';
+  // auto-open when there is history to see
+  const box = document.getElementById('ex-history-box');
+  if (box) box.open = rows.length > 0;
 }
 
 function tpl_endurance(s = null, default_type = 'run') {
@@ -372,6 +461,72 @@ function tpl_sport(s = null) {
   </form>`;
 }
 
+// ─── Row drag & drop (exercises within a workout, meals within a day) ─────
+// The dragged row is moved live within its tbody on dragover; the new order
+// is committed on dragend via the existing reorder endpoints.
+
+let _drag_row = null;
+
+function row_drag_start(e) {
+  _drag_row = e.currentTarget;
+  e.dataTransfer.effectAllowed = 'move';
+  try { e.dataTransfer.setData('text/plain', ''); } catch {}   // Firefox needs data
+  _drag_row.classList.add('dragging');
+}
+
+function row_drag_over(e) {
+  if (!_drag_row) return;
+  const row = e.currentTarget;
+  if (row === _drag_row || row.parentElement !== _drag_row.parentElement) return;
+  e.preventDefault();
+  const r = row.getBoundingClientRect();
+  const after = (e.clientY - r.top) > r.height / 2;
+  row.parentElement.insertBefore(_drag_row, after ? row.nextSibling : row);
+}
+
+async function ex_drag_end() {
+  const row = _drag_row;
+  _drag_row = null;
+  if (!row) return;
+  row.classList.remove('dragging');
+  const sid = parseInt(row.dataset.sessionId);
+  const ids = [...row.parentElement.querySelectorAll('tr[data-ex-id]')]
+    .map(tr => parseInt(tr.dataset.exId));
+  const s = workouts.find(w => w.id === sid);
+  if (!s) return;
+  s.exercises.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id));
+  render_activities();
+  try {
+    await api('PUT', `/api/workouts/${sid}/exercises/reorder`, { ids });
+  } catch (err) {
+    alert('Fehler beim Umsortieren: ' + err.message);
+    await load_workouts();
+  }
+}
+
+async function meal_drag_end() {
+  const row = _drag_row;
+  _drag_row = null;
+  if (!row) return;
+  row.classList.remove('dragging');
+  const date    = row.dataset.date;
+  const day_ids = [...row.parentElement.querySelectorAll('tr[data-meal-id]')]
+    .map(tr => parseInt(tr.dataset.mealId));
+  const by_id     = new Map(meals.map(m => [m.id, m]));
+  const reordered = day_ids.map(id => by_id.get(id)).filter(Boolean);
+  // Rebuild the global meals order: this day's sessions take their new
+  // sequence, everything else keeps its position.
+  let qi = 0;
+  meals = meals.map(m => m.date === date ? reordered[qi++] : m);
+  render_meals();
+  try {
+    await api('PUT', '/api/meals/reorder', { ids: meals.map(m => m.id) });
+  } catch (err) {
+    alert('Fehler beim Umsortieren: ' + err.message);
+    await load_meals();
+  }
+}
+
 // ─── Activities — combined render ─────────────────────────────────────────
 
 function render_activities() {
@@ -423,8 +578,11 @@ function _workout_card(s) {
         </thead>
         <tbody>
           ${s.exercises.map((ex, idx) => `
-          <tr>
+          <tr draggable="true" data-ex-id="${ex.id}" data-session-id="${s.id}"
+              ondragstart="row_drag_start(event)" ondragover="row_drag_over(event)"
+              ondragend="ex_drag_end()">
             <td class="reorder-col">
+              <span class="drag-handle" title="Ziehen zum Umsortieren">⠿</span>
               <button class="reorder-btn" title="Nach oben"
                       ${idx === 0 ? 'disabled' : ''}
                       onclick="move_exercise(${s.id}, ${ex.id}, -1)">▲</button>
@@ -435,7 +593,7 @@ function _workout_card(s) {
             <td>${esc(ex.exercise_name)}</td>
             <td>${ex.sets}</td>
             <td>${fmt_reps(ex.reps_per_set)}</td>
-            <td>${fmt_weight(ex.weight_kg, ex.weight_lbs)}</td>
+            <td>${fmt_weight(ex.weight_kg, ex.weight_lbs, _is_per_hand(ex.exercise_name))}</td>
             <td>${esc(ex.comment || '')}</td>
             <td class="row-actions">
               <button class="outline secondary" title="Kopieren" onclick="copy_exercise(${ex.id},${s.id})">&#10064;</button>
@@ -566,10 +724,33 @@ async function load_workouts() {
   }
 }
 
-function open_new_workout() {
-  const today = new Date().toISOString().slice(0, 10);
-  open_modal('Neue Kraft-Session', tpl_workout_session(today), async data => {
-    await api('POST', '/api/workouts', { date: data.date, comment: data.comment || null });
+async function open_new_workout() {
+  const today = today_local();
+  try { training_plans = await api('GET', '/api/plans'); } catch { training_plans = []; }
+  const plan_select = training_plans.length ? `
+    <label>Trainingsplan übernehmen (optional)
+      <select name="plan_id">
+        <option value="">— kein Plan —</option>
+        ${training_plans.map(p =>
+          `<option value="${p.id}">${esc(p.name)} (${p.items.length} Übungen)</option>`).join('')}
+      </select>
+    </label>` : '';
+  open_modal('Neue Kraft-Session', tpl_workout_session(today, '', plan_select), async data => {
+    const { id: session_id } = await api('POST', '/api/workouts',
+      { date: data.date, comment: data.comment || null });
+    const plan = training_plans.find(p => p.id === parseInt(data.plan_id));
+    if (plan) {
+      for (const i of plan.items) {
+        await api('POST', `/api/workouts/${session_id}/exercises`, {
+          exercise_name: i.exercise_name,
+          sets:          i.sets,
+          reps_str:      i.reps_str,
+          weight_str:    i.weight_str || null,
+          weight_unit:   i.weight_unit || 'kg',
+          comment:       null,
+        });
+      }
+    }
     await load_workouts();
   });
 }
@@ -592,7 +773,7 @@ async function del_workout(session_id) {
 }
 
 function copy_workout(session_id) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = today_local();
   open_modal('Workout kopieren', `
     <label>Datum
       <input type="date" id="copy-date" value="${today}">
@@ -677,6 +858,7 @@ async function open_add_exercise(session_id) {
     await load_workouts();
     await load_exercise_catalog();
   });
+  update_exercise_history('');
 }
 
 async function open_edit_exercise(exercise_id) {
@@ -688,6 +870,7 @@ async function open_edit_exercise(exercise_id) {
     await load_workouts();
     await load_exercise_catalog();
   });
+  update_exercise_history(found.exercise.exercise_name);
 }
 
 async function del_exercise(exercise_id) {
@@ -763,14 +946,14 @@ function do_export_workouts() {
 
   const rows = [[
     'Datum', 'Session-Kommentar', 'Übung', 'Sätze',
-    'Wiederholungen', 'Gewicht (kg)', 'Gewicht (lbs)', 'Übungs-Kommentar',
+    'Wiederholungen', 'Gewicht (kg)', 'Gewicht (lbs)', 'Pro Seite', 'Übungs-Kommentar',
   ]];
   const join_w = raw => raw
     ? JSON.parse(raw).map(v => v == null ? 'BW' : v).join(' ')
     : 'BW';
   for (const s of list) {
     if (!s.exercises.length) {
-      rows.push([s.date, s.comment || '', '', '', '', '', '', '']);
+      rows.push([s.date, s.comment || '', '', '', '', '', '', '', '']);
       continue;
     }
     for (const ex of s.exercises) {
@@ -782,6 +965,7 @@ function do_export_workouts() {
         JSON.parse(ex.reps_per_set).join(' '),
         join_w(ex.weight_kg),
         ex.weight_lbs ? JSON.parse(ex.weight_lbs).map(v => v == null ? 'BW' : v).join(' ') : '',
+        _is_per_hand(ex.exercise_name) ? 'ja' : '',
         ex.comment || '',
       ]);
     }
@@ -959,6 +1143,8 @@ async function load_exercise_catalog() {
   exercise_catalog = await api('GET', '/api/exercise-catalog');
   _update_exercises_datalist();
   render_exercises_db();
+  // weight labels ("pro Seite") come from the catalog — refresh the cards
+  if (workouts.length) render_activities();
 }
 
 async function ensure_exercises_loaded() {
@@ -973,6 +1159,18 @@ function _update_exercises_datalist() {
     document.body.appendChild(dl);
   }
   dl.innerHTML = exercise_catalog.map(e => `<option value="${esc(e.name)}">`).join('');
+}
+
+// Base-exercise attributes live in the catalog (per_hand, muscles, comment).
+function _exercise_meta(name) {
+  const n = (name || '').trim().toLowerCase();
+  return exercise_catalog.find(e => e.name.toLowerCase() === n) || null;
+}
+
+// "pro Seite" is a property of the exercise itself, not of a single entry.
+function _is_per_hand(name) {
+  const m = _exercise_meta(name);
+  return !!(m && m.per_hand);
 }
 
 function _food_lookup(name) {
@@ -1044,9 +1242,11 @@ function switch_acts_tab(btn) {
   const tab = btn.dataset.actsTab;
   document.getElementById('acts-subtab-history').hidden   = (tab !== 'history');
   document.getElementById('acts-subtab-exercises').hidden = (tab !== 'exercises');
+  document.getElementById('acts-subtab-plans').hidden     = (tab !== 'plans');
   document.getElementById('activities-add-btn').hidden    = (tab !== 'history');
   document.getElementById('activities-export-btn').hidden = (tab !== 'history');
   if (tab === 'exercises') load_exercise_catalog();
+  if (tab === 'plans')     load_plans();
 }
 
 // Convert bare URLs in a (already plain) string into clickable links.
@@ -1067,10 +1267,11 @@ function render_exercises_db() {
   }
   const sorted = [...exercise_catalog].sort((a, b) => a.name.localeCompare(b.name));
   el.innerHTML = add_btn + `<figure><table>
-    <thead><tr><th>Übung</th><th>Kommentar</th><th></th></tr></thead>
+    <thead><tr><th>Übung</th><th>Muskeln</th><th>Kommentar</th><th></th></tr></thead>
     <tbody>${sorted.map(e => `
       <tr>
         <td>${esc(e.name)}</td>
+        <td>${e.muscles ? esc(e.muscles) : '<span style="color:var(--pico-muted-color)">&ndash;</span>'}</td>
         <td style="white-space:pre-wrap">${e.comment ? linkify(e.comment) : '<span style="color:var(--pico-muted-color)">&ndash;</span>'}</td>
         <td class="row-actions">
           <button class="outline secondary" onclick="open_edit_exercise_db(${e.id})">&#9998;</button>
@@ -1084,13 +1285,30 @@ function render_exercises_db() {
 function _exercise_db_modal_body(e) {
   const name    = e ? esc(e.name) : '';
   const comment = e ? esc(e.comment || '') : '';
+  const muscles = e ? esc(e.muscles || '') : '';
   return `<div>
     <label>Übung
       <input type="text" id="exdb-name" value="${name}" placeholder="z.B. Bankdrücken" required>
     </label>
+    <label>Trainierte Muskeln
+      <input type="text" id="exdb-muscles" value="${muscles}" placeholder="z.B. Brust, Trizeps, vordere Schulter">
+    </label>
+    <div style="display:flex;align-items:center;gap:1rem;margin-bottom:1rem;flex-wrap:wrap">
+      <strong style="font-size:.9rem">Gewichtsangabe:</strong>
+      <label style="margin:0;display:inline-flex;align-items:center;gap:.35rem">
+        <input type="checkbox" name="per_hand" onchange="_wmode_pick(this)" ${e && e.per_hand ? 'checked' : ''}> pro Seite
+      </label>
+      <label style="margin:0;display:inline-flex;align-items:center;gap:.35rem">
+        <input type="checkbox" name="wm_total" onchange="_wmode_pick(this)" ${e && e.per_hand ? '' : 'checked'}> Gesamt
+      </label>
+    </div>
     <label>Kommentar (z.B. YouTube-Link, Technik-Hinweise)
       <textarea id="exdb-comment" rows="3" placeholder="https://youtu.be/...">${comment}</textarea>
     </label>
+    <details id="ex-history-box" style="margin-bottom:1rem">
+      <summary style="cursor:pointer;font-size:.9rem;color:var(--pico-primary)">Verlauf dieser Übung</summary>
+      <div id="ex-history" style="font-size:.85rem;margin-top:.4rem"></div>
+    </details>
     <div class="form-footer">
       <button type="button" class="secondary outline" onclick="close_modal()">Abbrechen</button>
       <button type="button" id="exdb-save-btn" onclick="save_exercise_db(${e ? e.id : 'null'})">Speichern</button>
@@ -1100,12 +1318,14 @@ function _exercise_db_modal_body(e) {
 
 function open_new_exercise_db() {
   open_modal('Neue Übung', _exercise_db_modal_body(null), null);
+  update_exercise_history('');
 }
 
 function open_edit_exercise_db(exercise_id) {
   const e = exercise_catalog.find(x => x.id === exercise_id);
   if (!e) return;
   open_modal('Übung bearbeiten', _exercise_db_modal_body(e), null);
+  update_exercise_history(e.name);
 }
 
 async function del_exercise_db(exercise_id) {
@@ -1118,18 +1338,162 @@ async function del_exercise_db(exercise_id) {
 async function save_exercise_db(exercise_id) {
   const name    = document.getElementById('exdb-name').value.trim();
   const comment = document.getElementById('exdb-comment').value.trim() || null;
+  const muscles = document.getElementById('exdb-muscles').value.trim() || null;
+  const per_hand = document.querySelector('#modal-body [name="per_hand"]').checked;
   if (!name) { alert('Bitte Übungsname eingeben.'); return; }
   const btn = document.getElementById('exdb-save-btn');
   btn.setAttribute('aria-busy', 'true');
   btn.disabled = true;
   try {
     if (exercise_id === null) {
-      await api('POST', '/api/exercise-catalog', { name, comment });
+      await api('POST', '/api/exercise-catalog', { name, comment, muscles, per_hand });
     } else {
-      await api('PUT', `/api/exercise-catalog/${exercise_id}`, { name, comment });
+      await api('PUT', `/api/exercise-catalog/${exercise_id}`, { name, comment, muscles, per_hand });
     }
     close_modal();
     await load_exercise_catalog();
+    render_activities();          // weight labels depend on per_hand
+  } catch (err) {
+    alert('Fehler: ' + err.message);
+    btn.removeAttribute('aria-busy');
+    btn.disabled = false;
+  }
+}
+
+// ─── Training plans ───────────────────────────────────────────────────────
+
+async function load_plans() {
+  training_plans = await api('GET', '/api/plans');
+  render_plans();
+}
+
+function _plan_item_summary(i) {
+  const w = i.weight_str
+    ? ` @${i.weight_str} ${i.weight_unit}${_is_per_hand(i.exercise_name) ? ' pro Seite' : ''}` : '';
+  return `${i.sets}×${i.reps_str} ${esc(i.exercise_name)}${w}`;
+}
+
+function render_plans() {
+  const el = document.getElementById('plans-list');
+  if (!el) return;
+  const add_btn = `<div style="display:flex;justify-content:flex-end;margin-bottom:.75rem">
+    <button onclick="open_new_plan()" style="width:auto;margin:0">+ Neuer Trainingsplan</button>
+  </div>`;
+  if (!training_plans.length) {
+    el.innerHTML = add_btn + '<p class="empty">Noch keine Trainingspläne vorhanden.</p>';
+    return;
+  }
+  el.innerHTML = add_btn + `<figure><table>
+    <thead><tr><th>Name</th><th>Übungen</th><th></th></tr></thead>
+    <tbody>${training_plans.map(p => `
+      <tr>
+        <td>
+          <details class="recipe-details">
+            <summary><strong>${esc(p.name)}</strong></summary>
+            <ul class="recipe-ingredients">${p.items.map(i => `<li>${_plan_item_summary(i)}</li>`).join('') || '<li>leer</li>'}</ul>
+          </details>
+        </td>
+        <td>${p.items.length}</td>
+        <td class="row-actions">
+          <button class="outline secondary" onclick="open_edit_plan(${p.id})">&#9998;</button>
+          <button class="outline contrast"  onclick="del_plan(${p.id})">&#10005;</button>
+        </td>
+      </tr>`).join('')}
+    </tbody>
+  </table></figure>`;
+}
+
+function _plan_item_row_html(i = null) {
+  return `<tr>
+    <td><input type="text" name="p-ex" value="${i ? esc(i.exercise_name) : ''}" list="exercises-datalist"
+               placeholder="Übung" style="margin:0;min-width:9rem"></td>
+    <td><input type="number" name="p-sets" value="${i ? i.sets : ''}" min="1" max="50" placeholder="3"
+               style="margin:0;width:3.8rem"></td>
+    <td><input type="text" name="p-reps" value="${i ? esc(i.reps_str) : ''}" placeholder="8 oder 8,8,6"
+               style="margin:0;width:6rem"></td>
+    <td><input type="text" name="p-weight" value="${i && i.weight_str ? esc(i.weight_str) : ''}" placeholder="leer = BW"
+               style="margin:0;width:6rem"></td>
+    <td><select name="p-unit" style="margin:0;width:auto;padding:.2rem 1.4rem .2rem .4rem">
+          <option value="kg"  ${!i || i.weight_unit !== 'lbs' ? 'selected' : ''}>kg</option>
+          <option value="lbs" ${i && i.weight_unit === 'lbs' ? 'selected' : ''}>lbs</option>
+        </select></td>
+    <td><button type="button" class="outline contrast" style="margin:0;padding:.15rem .4rem;width:auto;font-size:.8rem"
+                onclick="this.closest('tr').remove()">&#10005;</button></td>
+  </tr>`;
+}
+
+function add_plan_item_row() {
+  document.getElementById('pl-items').insertAdjacentHTML('beforeend', _plan_item_row_html());
+  document.querySelector('#pl-items tr:last-child input').focus();
+}
+
+async function _open_plan_modal(p) {
+  await ensure_exercises_loaded();
+  const rows = p ? p.items.map(i => _plan_item_row_html(i)).join('') : '';
+  open_modal(p ? 'Trainingsplan bearbeiten' : 'Neuer Trainingsplan', `<div>
+    <label>Name<input type="text" id="pl-name" value="${p ? esc(p.name) : ''}" placeholder="z.B. Push A" required></label>
+    <strong style="font-size:.9rem">Übungen</strong>
+    <div style="overflow-x:auto;margin-top:.4rem">
+      <table style="font-size:.85rem;margin:0">
+        <thead><tr><th>Übung</th><th>Sätze</th><th>Reps</th><th>Gewicht</th><th></th><th></th></tr></thead>
+        <tbody id="pl-items">${rows}</tbody>
+      </table>
+    </div>
+    <button type="button" class="secondary outline"
+            style="width:auto;font-size:.85rem;margin:.6rem 0 1rem"
+            onclick="add_plan_item_row()">+ Übung hinzufügen</button>
+    <div class="form-footer">
+      <button type="button" class="secondary outline" onclick="close_modal()">Abbrechen</button>
+      <button type="button" id="pl-save-btn" onclick="save_plan(${p ? p.id : 'null'})">Speichern</button>
+    </div>
+  </div>`, null);
+}
+
+function open_new_plan() { _open_plan_modal(null); }
+
+function open_edit_plan(plan_id) {
+  const p = training_plans.find(x => x.id === plan_id);
+  if (p) _open_plan_modal(p);
+}
+
+async function del_plan(plan_id) {
+  const p = training_plans.find(x => x.id === plan_id);
+  if (!p || !confirm(`Trainingsplan "${p.name}" löschen?`)) return;
+  await api('DELETE', `/api/plans/${plan_id}`);
+  await load_plans();
+}
+
+function _read_plan_rows() {
+  const items = [];
+  for (const row of document.querySelectorAll('#pl-items tr')) {
+    const g = n => row.querySelector(`[name="${n}"]`);
+    const name = g('p-ex').value.trim();
+    const sets = parseInt(g('p-sets').value);
+    const reps = g('p-reps').value.trim();
+    if (!name || isNaN(sets) || sets < 1 || !reps) continue;
+    items.push({
+      exercise_name: name,
+      sets,
+      reps_str:    reps,
+      weight_str:  g('p-weight').value.trim() || null,
+      weight_unit: g('p-unit').value,
+    });
+  }
+  return items;
+}
+
+async function save_plan(plan_id) {
+  const name = document.getElementById('pl-name').value.trim();
+  if (!name) { alert('Bitte Plan-Namen eingeben.'); return; }
+  const items = _read_plan_rows();
+  const btn = document.getElementById('pl-save-btn');
+  btn.setAttribute('aria-busy', 'true');
+  btn.disabled = true;
+  try {
+    if (plan_id === null) await api('POST', '/api/plans', { name, items });
+    else                  await api('PUT', `/api/plans/${plan_id}`, { name, items });
+    close_modal();
+    await load_plans();
   } catch (err) {
     alert('Fehler: ' + err.message);
     btn.removeAttribute('aria-busy');
@@ -1187,9 +1551,9 @@ function open_targets_modal() {
 function open_sync_modal() {
   open_modal('Katalog-Sync', `<form>
     <p style="font-size:.9rem;color:var(--pico-muted-color);margin-bottom:.75rem">
-      Teilt <strong>Lebensmittel, Rezepte und Übungen</strong> über einen gemeinsamen
-      Ordner (z.B. OneDrive/Dropbox). Tagebuch, Workouts und Körperdaten bleiben privat.
-      Fehlende Einträge werden übernommen, bestehende nie überschrieben.
+      Teilt <strong>Lebensmittel und Rezepte</strong> über einen gemeinsamen
+      Ordner (z.B. OneDrive/Dropbox). Übungen, Workouts, Tagebuch und Körperdaten
+      bleiben privat. Fehlende Einträge werden übernommen, bestehende nie überschrieben.
     </p>
     <label>Pfad zum gemeinsamen Ordner
       <input type="text" name="sync_dir" value="${esc(settings.sync_dir || '')}"
@@ -1222,11 +1586,11 @@ async function run_catalog_sync(from_modal = false) {
     return res;
   }
   const a = res.added;
-  const summary = `✓ Sync ok — übernommen: ${a.foods} Lebensmittel, ${a.recipes} Rezept(e), `
-    + `${a.exercises} Übung(en)${res.peers.length ? ` (von: ${res.peers.join(', ')})` : ' (noch keine Partner-Datei)'}`;
+  const summary = `✓ Sync ok — übernommen: ${a.foods} Lebensmittel, ${a.recipes} Rezept(e)`
+    + `${res.peers.length ? ` (von: ${res.peers.join(', ')})` : ' (noch keine Partner-Datei)'}`;
   if (out) { out.textContent = summary; out.style.color = 'inherit'; }
-  if (a.foods || a.recipes || a.exercises) {
-    await Promise.all([load_foods_db(), load_exercise_catalog()]);
+  if (a.foods || a.recipes) {
+    await load_foods_db();
     recipes = await api('GET', '/api/recipes');
     render_recipes();
   }
@@ -1312,8 +1676,11 @@ function render_meals() {
             const tp = s.items.reduce((a, i) => a + i.protein_g, 0);
             const tc = s.items.reduce((a, i) => a + i.carbs_g,   0);
             const tf = s.items.reduce((a, i) => a + i.fat_g,     0);
-            return `<tr>
+            return `<tr draggable="true" data-meal-id="${s.id}" data-date="${date}"
+                ondragstart="row_drag_start(event)" ondragover="row_drag_over(event)"
+                ondragend="meal_drag_end()">
               <td class="reorder-col">
+                <span class="drag-handle" title="Ziehen zum Umsortieren">⠿</span>
                 <button class="reorder-btn" title="Nach oben"  ${idx === 0             ? 'disabled' : ''} onclick="move_meal_in_day(${s.id},'${date}',-1)">▲</button>
                 <button class="reorder-btn" title="Nach unten" ${idx === ss.length - 1 ? 'disabled' : ''} onclick="move_meal_in_day(${s.id},'${date}', 1)">▼</button>
               </td>
@@ -1761,7 +2128,7 @@ async function del_food(food_id) {
 }
 
 function open_new_meal() {
-  open_new_meal_for(new Date().toISOString().slice(0, 10));
+  open_new_meal_for(today_local());
 }
 
 // Suggestions for the meal-name field: standard meal labels + all recipe
@@ -2148,7 +2515,7 @@ async function move_meal_in_day(session_id, date, dir) {
 function copy_meal(session_id) {
   const s = meals.find(m => m.id === session_id);
   if (!s) return;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = today_local();
   open_modal('Mahlzeit kopieren', `
     <label>Datum
       <input type="date" id="copy-date" value="${today}">
@@ -2237,7 +2604,7 @@ function render_body_weight() {
 }
 
 function tpl_body_weight(w = null) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = today_local();
   return `<form>
     <div class="grid">
       <label>Datum<input type="date" name="date" value="${w ? esc(w.date) : today}" required></label>
@@ -2312,7 +2679,7 @@ function render_body_measurements() {
 }
 
 function tpl_body_measurement(m = null) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = today_local();
   return `<form>
     <div class="grid">
       <label>Datum<input type="date" name="date" value="${m ? esc(m.date) : today}" required></label>
@@ -2404,7 +2771,7 @@ async function del_body_photo(id) {
 async function _upload_photos(file_list) {
   const files = Array.from(file_list).filter(f => f.type.startsWith('image/'));
   if (!files.length) { alert('Keine Bilddateien erkannt.'); return; }
-  const today = new Date().toISOString().slice(0, 10);
+  const today = today_local();
   const zone = document.getElementById('photo-dropzone');
   zone.setAttribute('aria-busy', 'true');
   try {
@@ -2451,8 +2818,17 @@ async function load_analysis() {
       body_weight = await api('GET', '/api/body/weight');
     }
   } catch { /* body weight simply unavailable */ }
-  _fill_analysis_selector();
-  render_analysis_chart();
+  render_analysis();
+}
+
+// Dispatch between the time/weight line chart and the weekly-volume bars.
+// The series dropdown is refilled to match the chart kind (weight-progression
+// lists only weighted exercises; volume also lists pure-bodyweight ones).
+function render_analysis() {
+  const kind = document.getElementById('ana-kind')?.value || 'verlauf';
+  _fill_analysis_selector(kind);
+  if (kind === 'volumen') render_volume_chart();
+  else render_analysis_chart();
 }
 
 // True if the exercise entry has at least one real (non-null) weight value.
@@ -2461,19 +2837,36 @@ function _has_weight(ex) {
   return JSON.parse(ex.weight_kg).some(v => v != null);
 }
 
-function _fill_analysis_selector() {
+// An exercise is pure bodyweight if it never had an added-weight set.
+function _is_bodyweight(name) {
+  for (const s of workouts)
+    for (const ex of s.exercises)
+      if (ex.exercise_name === name && _has_weight(ex)) return false;
+  return true;
+}
+
+function _fill_analysis_selector(kind = 'verlauf') {
   const sel  = document.getElementById('ana-series');
   const prev = sel.value;
-  // Exercises with at least one non-null weight value — pure BW exercises are useless here
-  const names = new Set();
+  const weighted = new Set(), bwonly = new Set();
   for (const s of workouts) {
     for (const ex of s.exercises) {
-      if (_has_weight(ex)) names.add(ex.exercise_name);
+      if (_has_weight(ex)) weighted.add(ex.exercise_name);
+      else                 bwonly.add(ex.exercise_name);
     }
   }
-  const ex_opts = [...names].sort((a, b) => a.localeCompare(b))
+  for (const n of weighted) bwonly.delete(n);   // "ever weighted" wins
+  const byName = (a, b) => a.localeCompare(b);
+  const wopts = [...weighted].sort(byName)
     .map(n => `<option value="ex:${esc(n)}">Übung: ${esc(n)}</option>`).join('');
-  sel.innerHTML = `<option value="bw">Körpergewicht</option>${ex_opts}`;
+  if (kind === 'volumen') {
+    // Volume works for bodyweight exercises too (counted as total reps)
+    const bopts = [...bwonly].sort(byName)
+      .map(n => `<option value="ex:${esc(n)}">Übung (nur Wdh): ${esc(n)}</option>`).join('');
+    sel.innerHTML = wopts + bopts;
+  } else {
+    sel.innerHTML = `<option value="bw">Körpergewicht</option>${wopts}`;
+  }
   if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
 }
 
@@ -2515,6 +2908,8 @@ function _analysis_points() {
       if (ex.exercise_name !== name || !_has_weight(ex)) continue;
       const raw  = unit === 'lbs' ? ex.weight_lbs : ex.weight_kg;
       if (!raw) continue;
+      // Progression chart shows the weight AS LOGGED (per-side stays per-side —
+      // it's the number you actually grab). Only the volume chart doubles it.
       const vals = JSON.parse(raw).filter(v => v != null);
       if (!vals.length) continue;
       if (!by_date.has(s.date)) by_date.set(s.date, []);
@@ -2544,6 +2939,119 @@ function _nice_ticks(min, max) {
 }
 
 const _ANA = { W: 860, H: 380, top: 16, right: 56, bottom: 36, left: 48 };
+
+// ISO week of a YYYY-MM-DD date; key sorts correctly across years.
+function _iso_week(date_str) {
+  const d = new Date(date_str + 'T00:00:00');
+  const t = new Date(d);
+  t.setDate(d.getDate() + 3 - ((d.getDay() + 6) % 7));   // Thursday of that week
+  const week1 = new Date(t.getFullYear(), 0, 4);
+  const wk = 1 + Math.round(((t - week1) / 86400000 - 3 + ((week1.getDay() + 6) % 7)) / 7);
+  return { key: `${t.getFullYear()}-W${String(wk).padStart(2, '0')}`, label: `KW${wk}`, thursday: t };
+}
+
+// Weekly training volume for the selected exercise, per ISO week.
+// Weighted exercises: Σ reps × weight (per-side weights count double).
+// Pure bodyweight exercises: Σ total reps (there is no weight to multiply).
+// Weeks without training show as zero bars (no misleading gaps).
+function _volume_weeks() {
+  const sel = document.getElementById('ana-series').value;
+  if (sel === 'bw') return null;                 // volume needs an exercise
+  const name = sel.slice(3);
+  const is_bw = _is_bodyweight(name);
+  const unit  = is_bw ? 'Wdh' : `${_series_unit(name)}×Wdh`;
+  const mult  = _is_per_hand(name) ? 2 : 1;      // per-side ⇒ full load
+  const by_week = new Map();
+  let min_th = null, max_th = null;
+  for (const s of workouts) {
+    for (const ex of s.exercises) {
+      if (ex.exercise_name !== name) continue;
+      const reps = JSON.parse(ex.reps_per_set);
+      let vol = 0;
+      if (is_bw) {
+        vol = reps.reduce((a, r) => a + (r || 0), 0);           // total reps
+      } else {
+        if (!_has_weight(ex)) continue;
+        const raw = _series_unit(name) === 'lbs' ? ex.weight_lbs : ex.weight_kg;
+        if (!raw) continue;
+        const w = JSON.parse(raw);
+        for (let i = 0; i < reps.length; i++) vol += (reps[i] || 0) * ((w[i] ?? 0) * mult);
+      }
+      if (vol <= 0) continue;
+      const wk = _iso_week(s.date);
+      by_week.set(wk.key, (by_week.get(wk.key) || 0) + vol);
+      if (!min_th || wk.thursday < min_th) min_th = wk.thursday;
+      if (!max_th || wk.thursday > max_th) max_th = wk.thursday;
+    }
+  }
+  if (!by_week.size) return { weeks: [], unit };
+  // contiguous week axis from first to last training week
+  const local_iso = t =>
+    `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
+  const weeks = [];
+  for (let t = new Date(min_th); t <= max_th; t.setDate(t.getDate() + 7)) {
+    const wk = _iso_week(local_iso(t));
+    weeks.push({ key: wk.key, label: wk.label, volume: Math.round(by_week.get(wk.key) || 0) });
+  }
+  return { weeks, unit };
+}
+
+function render_volume_chart() {
+  const el  = document.getElementById('analysis-chart');
+  const res = _volume_weeks();
+  if (res === null) {
+    el.innerHTML = '<p class="empty">Volumen gibt es nur für Übungen — bitte oben eine Übung wählen.</p>';
+    return;
+  }
+  const { weeks, unit } = res;
+  if (!weeks.length) {
+    el.innerHTML = '<p class="empty">Keine Daten für diese Auswahl vorhanden.</p>';
+    return;
+  }
+  const { W, H, top, right, bottom, left } = _ANA;
+  const iw = W - left - right, ih = H - top - bottom;
+  const ticks = _nice_ticks(0, Math.max(...weeks.map(w => w.volume)));
+  const y_max = ticks[ticks.length - 1] || 1;
+  const Y = v => top + ih - (v / y_max) * ih;
+
+  const n     = weeks.length;
+  const slot  = iw / n;
+  const bw    = Math.min(slot * 0.62, 64);
+  const grid  = ticks.map(v =>
+    `<line x1="${left}" y1="${Y(v)}" x2="${left + iw}" y2="${Y(v)}" stroke="var(--ana-grid)" stroke-width="1"/>
+     <text x="${left - 8}" y="${Y(v) + 4}" text-anchor="end" class="ana-tick">${v}</text>`).join('');
+  const lbl_every = Math.ceil(n / 10);           // ≤10 x labels
+  const bars = weeks.map((w, i) => {
+    const x = left + i * slot + (slot - bw) / 2;
+    const y = Y(w.volume);
+    const lbl = i % lbl_every === 0
+      ? `<text x="${left + i * slot + slot / 2}" y="${top + ih + 22}" text-anchor="middle" class="ana-tick">${w.label}</text>` : '';
+    const val = (n <= 14 && w.volume > 0)
+      ? `<text x="${x + bw / 2}" y="${y - 5}" text-anchor="middle" class="ana-endlabel">${w.volume}</text>` : '';
+    return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${(top + ih - y).toFixed(1)}"
+                  fill="var(--ana-series)" rx="2"><title>${w.key}: ${w.volume} ${esc(unit)}</title></rect>${val}${lbl}`;
+  }).join('');
+
+  el.innerHTML = `
+    <p class="chart-caption">Wöchentliches Volumen &mdash; Einheit: <strong>${esc(unit)}</strong></p>
+    <div class="chart-wrap">
+      <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Volumen pro Woche"
+           style="width:100%;height:auto;display:block">
+        <rect x="0" y="0" width="${W}" height="${H}" fill="var(--ana-surface)"/>
+        ${grid}
+        <line x1="${left}" y1="${top + ih}" x2="${left + iw}" y2="${top + ih}"
+              stroke="var(--ana-axis)" stroke-width="1"/>
+        ${bars}
+      </svg>
+    </div>
+    <details style="margin-top:.75rem">
+      <summary style="cursor:pointer;font-size:.9rem;color:var(--pico-muted-color)">Datentabelle</summary>
+      <figure><table style="font-size:.85rem">
+        <thead><tr><th>Woche</th><th>Volumen (${esc(unit)})</th></tr></thead>
+        <tbody>${weeks.map(w => `<tr><td>${w.key}</td><td>${w.volume}</td></tr>`).join('')}</tbody>
+      </table></figure>
+    </details>`;
+}
 
 // Step path: horizontal to the next x first, then vertical to its y (no
 // linear interpolation between points).

@@ -39,12 +39,16 @@
       <div class="subtab-bar">
         <button class="subtab-btn active" data-acts-tab="history"   onclick="switch_acts_tab(this)">Verlauf</button>
         <button class="subtab-btn"        data-acts-tab="exercises" onclick="switch_acts_tab(this)">Übungen</button>
+        <button class="subtab-btn"        data-acts-tab="plans"     onclick="switch_acts_tab(this)">Trainingspläne</button>
       </div>
       <div id="acts-subtab-history">
         <div id="activities-list"><p aria-busy="true">Lade...</p></div>
       </div>
       <div id="acts-subtab-exercises" hidden>
         <div id="exercises-db-list"></div>
+      </div>
+      <div id="acts-subtab-plans" hidden>
+        <div id="plans-list"></div>
       </div>
     </section>
 
@@ -105,7 +109,13 @@
       <h2>Analyse</h2>
       <div style="display:flex;gap:.75rem;align-items:end;flex-wrap:wrap;margin-bottom:1rem">
         <label style="margin:0;flex:1;min-width:14rem">Datenreihe
-          <select id="ana-series" onchange="render_analysis_chart()" style="margin:0"></select>
+          <select id="ana-series" onchange="render_analysis()" style="margin:0"></select>
+        </label>
+        <label style="margin:0;min-width:12rem">Diagramm
+          <select id="ana-kind" onchange="render_analysis()" style="margin:0">
+            <option value="verlauf">Gewichts-Verlauf</option>
+            <option value="volumen">Volumen pro Woche</option>
+          </select>
         </label>
       </div>
       <div id="analysis-chart"><p class="empty">Lade...</p></div>
@@ -141,6 +151,6 @@
     </article>
   </dialog>
 
-  <script src="/static/app.js?v=36"></script>
+  <script src="/static/app.js?v=39"></script>
 </body>
 </html>
