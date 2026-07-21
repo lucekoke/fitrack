@@ -1404,9 +1404,14 @@ function render_plans() {
 }
 
 function _plan_item_row_html(i = null) {
+  const muscles = i ? (_exercise_meta(i.exercise_name)?.muscles || '') : '';
   return `<tr>
+    <td class="reorder-col">
+      <button type="button" class="reorder-btn" title="Nach oben"  onclick="move_plan_row(this,-1)">▲</button>
+      <button type="button" class="reorder-btn" title="Nach unten" onclick="move_plan_row(this, 1)">▼</button>
+    </td>
     <td><input type="text" name="p-ex" value="${i ? esc(i.exercise_name) : ''}" list="exercises-datalist"
-               placeholder="Übung" style="margin:0;min-width:9rem"></td>
+               placeholder="Übung" onchange="on_plan_exercise_change(this)" style="margin:0;min-width:9rem"></td>
     <td><input type="number" name="p-sets" value="${i ? i.sets : ''}" min="1" max="50" placeholder="3"
                style="margin:0;width:3.8rem"></td>
     <td><input type="text" name="p-reps" value="${i ? esc(i.reps_str) : ''}" placeholder="8 oder 8,8,6"
@@ -1417,6 +1422,7 @@ function _plan_item_row_html(i = null) {
           <option value="kg"  ${!i || i.weight_unit !== 'lbs' ? 'selected' : ''}>kg</option>
           <option value="lbs" ${i && i.weight_unit === 'lbs' ? 'selected' : ''}>lbs</option>
         </select></td>
+    <td class="plan-muscle" style="font-size:.8rem;color:var(--pico-muted-color);white-space:nowrap">${esc(muscles)}</td>
     <td><button type="button" class="outline contrast" style="margin:0;padding:.15rem .4rem;width:auto;font-size:.8rem"
                 onclick="this.closest('tr').remove()">&#10005;</button></td>
   </tr>`;
@@ -1424,7 +1430,54 @@ function _plan_item_row_html(i = null) {
 
 function add_plan_item_row() {
   document.getElementById('pl-items').insertAdjacentHTML('beforeend', _plan_item_row_html());
-  document.querySelector('#pl-items tr:last-child input').focus();
+  document.querySelector('#pl-items tr:last-child [name="p-ex"]').focus();
+}
+
+// Move a plan row up/down within the editor (order is read from the DOM on save).
+function move_plan_row(btn, dir) {
+  const row = btn.closest('tr');
+  if (dir < 0 && row.previousElementSibling)
+    row.parentElement.insertBefore(row, row.previousElementSibling);
+  else if (dir > 0 && row.nextElementSibling)
+    row.parentElement.insertBefore(row.nextElementSibling, row);
+}
+
+// Most recent logged sets/reps/weight for an exercise (newest workout wins).
+function _last_workout_entry(name) {
+  const n = name.trim().toLowerCase();
+  const sorted = [...workouts].sort((a, b) => b.date.localeCompare(a.date));
+  for (const s of sorted) {
+    for (const ex of s.exercises) {
+      if (ex.exercise_name.toLowerCase() !== n) continue;
+      const unit = pick_weight_unit(ex);
+      const wraw = unit === 'lbs' ? ex.weight_lbs : ex.weight_kg;
+      return {
+        sets:       ex.sets,
+        reps_str:   reps_to_input(ex.reps_per_set),
+        weight_str: wraw ? weight_to_input(wraw) : '',
+        unit,
+      };
+    }
+  }
+  return null;
+}
+
+// On picking an exercise: show its main muscles and prefill empty
+// sets/reps/weight from the last time it was trained.
+function on_plan_exercise_change(input) {
+  const row  = input.closest('tr');
+  const name = input.value.trim();
+  row.querySelector('.plan-muscle').textContent = _exercise_meta(name)?.muscles || '';
+  if (!name) return;
+  const last = _last_workout_entry(name);
+  if (!last) return;
+  const sets   = row.querySelector('[name="p-sets"]');
+  const reps   = row.querySelector('[name="p-reps"]');
+  const weight = row.querySelector('[name="p-weight"]');
+  const unit   = row.querySelector('[name="p-unit"]');
+  if (!sets.value)   sets.value = last.sets;
+  if (!reps.value)   reps.value = last.reps_str;
+  if (!weight.value && last.weight_str) { weight.value = last.weight_str; unit.value = last.unit; }
 }
 
 async function _open_plan_modal(p) {
@@ -1435,7 +1488,7 @@ async function _open_plan_modal(p) {
     <strong style="font-size:.9rem">Übungen</strong>
     <div style="overflow-x:auto;margin-top:.4rem">
       <table style="font-size:.85rem;margin:0">
-        <thead><tr><th>Übung</th><th>Sätze</th><th>Reps</th><th>Gewicht</th><th></th><th></th></tr></thead>
+        <thead><tr><th></th><th>Übung</th><th>Sätze</th><th>Reps</th><th>Gewicht</th><th></th><th>Muskeln</th><th></th></tr></thead>
         <tbody id="pl-items">${rows}</tbody>
       </table>
     </div>
