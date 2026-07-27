@@ -1242,9 +1242,12 @@ function on_food_name_change(input) {
     if (food.unit_name) row.dataset.unitName = food.unit_name;
     else delete row.dataset.unitName;
     if (unit_sel) {
-      // Keep the current unit (defaults to grams) so typing a plain number is
-      // read as grams — the food's own serving unit stays available to pick.
-      unit_sel.innerHTML = _unit_options_html(food, unit_sel.value);
+      // Default the row to the food's own serving unit — for a drink sold by
+      // the can, "1 Dose/Glas" is the natural entry, not "473 g". Only auto-pick
+      // while the unit is still the untouched default; once the user changes it
+      // manually (unitManual) we leave their choice alone.
+      const auto = row.dataset.unitManual !== '1' && unit_sel.value === 'g' && food.unit_name;
+      unit_sel.innerHTML = _unit_options_html(food, auto ? food.unit_name : unit_sel.value);
     }
     if (badge) { badge.className = 'food-badge match'; badge.textContent = '✓'; }
     _set_macros_readonly(row, true);
@@ -2709,6 +2712,7 @@ function _row_grams(row) {
 
 function on_unit_change(sel) {
   const row = sel.closest('tr');
+  row.dataset.unitManual = '1';                       // respect the user's choice from now on
   if (row.dataset.per100kcal === undefined) return;   // one-time item → macros are manual
   const g = _row_grams(row);
   if (!isNaN(g)) {
