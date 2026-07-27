@@ -3449,7 +3449,7 @@ function render_analysis() {
     const t = cfg.target ? parseFloat(settings[cfg.target]) : NaN;
     const target = (!isNaN(t) && t > 0) ? { value: t, label: 'Ziel' } : null;
     _render_bars(el, _range_bars(_nutrition_daily(metric)),
-      cfg.label, 'Noch keine Ernährungsdaten vorhanden.', target);
+      cfg.label, 'Noch keine Ernährungsdaten vorhanden.', target, range);
   } else if (type === 'koerper') {
     render_line_chart(el, _bodyweight_points(), 'Körpergewicht', ana_x_range || undefined);
   } else if (type === 'muskel') {
@@ -3475,7 +3475,7 @@ function render_analysis() {
     } else if (kind === 'volumen') {
       _render_bars(el, _range_bars(_volume_weeks(name)), 'Wöchentliches Volumen', '');
     } else if (kind === 'volumen_workout') {
-      _render_bars(el, _range_bars(_volume_all_workouts(name)), 'Volumen pro Workout', '');
+      _render_bars(el, _range_bars(_volume_all_workouts(name)), 'Volumen pro Workout', '', null, range);
     }
   }
   _render_range_bar();
@@ -3769,9 +3769,11 @@ function _stacked_sets(sel) {
   return { bars, series, unit: 'Sätze' };
 }
 
-// Generic vertical bar chart. bars: [{label, value, title}].
+// Generic vertical bar chart. bars: [{label, value, title, date}].
 // `target` (optional) = {value, label} → drawn as a red reference line.
-function _render_bars(el, res, caption, empty_msg, target = null) {
+// `x_range` (optional) = {min, max} → bars are placed on a proportional time
+// axis (equidistant by date, gaps preserved) instead of packed edge-to-edge.
+function _render_bars(el, res, caption, empty_msg, target = null, x_range = null) {
   if (res === null) { el.innerHTML = `<p class="empty">${empty_msg}</p>`; return; }
   const { bars, unit } = res;
   if (!bars.length) { el.innerHTML = '<p class="empty">Keine Daten für diese Auswahl vorhanden.</p>'; return; }
@@ -3789,19 +3791,49 @@ function _render_bars(el, res, caption, empty_msg, target = null) {
           class="ana-endlabel" fill="#e34948">${esc(target.label)}: ${target.value}</text>` : '';
 
   const n    = bars.length;
-  const slot = iw / n;
-  const bw   = Math.min(slot * 0.62, 64);
   const grid = ticks.map(v =>
     `<line x1="${left}" y1="${Y(v)}" x2="${left + iw}" y2="${Y(v)}" stroke="var(--ana-grid)" stroke-width="1"/>
      <text x="${left - 8}" y="${Y(v) + 4}" text-anchor="end" class="ana-tick">${v}</text>`).join('');
-  const lbl_every = Math.ceil(n / 12);
+
+  // Per-bar centre x + bar width, and which bars get an x-axis date label.
+  const time_axis = x_range && bars.every(b => b.date);
+  let center, bw, show_lbl;
+  if (time_axis) {
+    const t     = d => new Date(d + 'T00:00:00').getTime();
+    const t_min = t(x_range.min), t_max = t(x_range.max);
+    const span  = Math.max(t_max - t_min, 1);
+    center = b => left + ((t(b.date) - t_min) / span) * iw;
+    if (n === 1) {
+      bw = Math.min(64, iw * 0.3);
+      center = () => left + iw / 2;
+    } else {
+      const xs = bars.map(center).sort((a, b) => a - b);
+      let gap = Infinity;
+      for (let i = 1; i < xs.length; i++) gap = Math.min(gap, xs[i] - xs[i - 1]);
+      bw = Math.max(6, Math.min(gap * 0.7, 56));
+    }
+    // ≤6 evenly-picked dates as x labels (matches the line chart).
+    const n_lbl = Math.min(6, n);
+    const lbl_ix = new Set(Array.from({ length: n_lbl },
+      (_, i) => Math.round(i * (n - 1) / Math.max(n_lbl - 1, 1))));
+    show_lbl = i => lbl_ix.has(i);
+  } else {
+    const slot = iw / n;
+    bw = Math.min(slot * 0.62, 64);
+    center = (_b, i) => left + i * slot + slot / 2;
+    const lbl_every = Math.ceil(n / 12);
+    show_lbl = i => i % lbl_every === 0;
+  }
+  const fmt_d = d => `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(2, 4)}`;
+
   const svg_bars = bars.map((b, i) => {
-    const x = left + i * slot + (slot - bw) / 2;
-    const y = Y(b.value);
-    const lbl = i % lbl_every === 0
-      ? `<text x="${left + i * slot + slot / 2}" y="${top + ih + 22}" text-anchor="middle" class="ana-tick">${esc(b.label)}</text>` : '';
+    const cx = center(b, i);
+    const x  = Math.max(left, Math.min(cx - bw / 2, left + iw - bw));
+    const y  = Y(b.value);
+    const lbl = show_lbl(i)
+      ? `<text x="${cx.toFixed(1)}" y="${top + ih + 22}" text-anchor="middle" class="ana-tick">${esc(time_axis ? fmt_d(b.date) : b.label)}</text>` : '';
     const val = (n <= 14 && b.value > 0)
-      ? `<text x="${x + bw / 2}" y="${y - 5}" text-anchor="middle" class="ana-endlabel">${b.value}</text>` : '';
+      ? `<text x="${(x + bw / 2).toFixed(1)}" y="${(y - 5).toFixed(1)}" text-anchor="middle" class="ana-endlabel">${b.value}</text>` : '';
     return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${(top + ih - y).toFixed(1)}"
                   fill="var(--ana-series)" rx="2"><title>${esc(b.title)}</title></rect>${val}${lbl}`;
   }).join('');
