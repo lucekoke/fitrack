@@ -15,7 +15,7 @@
       </ul>
       <ul>
         <li><a href="#" class="tab-link active" data-tab="activities">Aktivitäten</a></li>
-        <li><a href="#" class="tab-link" data-tab="meals">Mahlzeiten</a></li>
+        <li><a href="#" class="tab-link" data-tab="meals">Ernährung</a></li>
         <li><a href="#" class="tab-link" data-tab="body">Körper</a></li>
         <li><a href="#" class="tab-link" data-tab="analysis">Analyse</a></li>
         <li><a href="#" class="tab-link" data-tab="coach">AI Coach</a></li>
@@ -52,14 +52,14 @@
       </div>
     </section>
 
-    <!-- ── Mahlzeiten ── -->
+    <!-- ── Ernährung ── -->
     <section id="tab-meals" class="tab-content" hidden>
       <div class="section-header">
-        <h2>Mahlzeiten</h2>
+        <h2>Ernährung</h2>
         <div style="display:flex; gap:.5rem">
           <button id="meals-targets-btn" class="outline secondary" onclick="open_targets_modal()"
                   title="Tagesziele (kcal-Limit, Protein-Soll)">&#9881; Ziele</button>
-          <button id="meals-add-btn" onclick="open_new_meal()">+ Neue Mahlzeit</button>
+          <button id="meals-add-btn" onclick="open_add_day()">+ Tag hinzufügen</button>
         </div>
       </div>
       <div class="subtab-bar">
@@ -108,17 +108,22 @@
     <section id="tab-analysis" class="tab-content" hidden>
       <h2>Analyse</h2>
       <div style="display:flex;gap:.75rem;align-items:end;flex-wrap:wrap;margin-bottom:1rem">
-        <label style="margin:0;flex:1;min-width:14rem">Datenreihe
+        <label style="margin:0;min-width:10rem">Typ
+          <select id="ana-type" onchange="on_ana_type_change()" style="margin:0">
+            <option value="uebung">Übung</option>
+            <option value="muskel">Muskelgruppe</option>
+            <option value="koerper">Körpergewicht</option>
+          </select>
+        </label>
+        <label id="ana-series-field" style="margin:0;flex:1;min-width:14rem">Auswahl
           <select id="ana-series" onchange="render_analysis()" style="margin:0"></select>
         </label>
         <label style="margin:0;min-width:12rem">Diagramm
-          <select id="ana-kind" onchange="render_analysis()" style="margin:0">
-            <option value="verlauf">Gewichts-Verlauf</option>
-            <option value="volumen">Volumen pro Woche</option>
-          </select>
+          <select id="ana-kind" onchange="render_analysis()" style="margin:0"></select>
         </label>
       </div>
       <div id="analysis-chart"><p class="empty">Lade...</p></div>
+      <div id="ana-range-bar" style="margin-top:.5rem;display:flex;gap:.5rem;flex-wrap:wrap"></div>
     </section>
 
     <!-- ── AI Coach ── -->
@@ -151,6 +156,6 @@
     </article>
   </dialog>
 
-  <script src="/static/app.js?v=40"></script>
+  <script src="/static/app.js?v=49"></script>
 </body>
 </html>

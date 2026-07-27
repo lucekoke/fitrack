@@ -257,12 +257,15 @@ modal.addEventListener('close', () => {
 const modal2 = document.getElementById('modal2');
 
 function open_modal2(title, body_html) {
-  if (modal2.open) modal2.close();
+  // If already open (e.g. recipe picker → "Anpassen…"), swap the content in
+  // place. Closing first would queue an async `close` event that wipes the new
+  // body after we set it — leaving an empty modal.
+  const already = modal2.open;
   _rescue_datalists();
   document.getElementById('modal2-title').textContent = title;
   const body2 = document.getElementById('modal2-body');
   body2.innerHTML = body_html;
-  modal2.showModal();
+  if (!already) modal2.showModal();
   _focus_first_field(body2);
 }
 
@@ -348,6 +351,16 @@ function _wmode_pick(cb) {
   const total = root.querySelector('[name="wm_total"]');
   if (cb === side) { side.checked = true;  total.checked = false; }
   else             { total.checked = true; side.checked  = false; }
+}
+
+// Kraftübung / Dehnübung: exactly one active; muscles only apply to Kraft.
+function _art_pick(cb) {
+  const root  = cb.closest('#modal-body') || document.getElementById('modal-body');
+  const kraft = root.querySelector('[name="art_kraft"]');
+  const dehn  = root.querySelector('[name="art_dehn"]');
+  if (cb === kraft) { kraft.checked = true;  dehn.checked = false; }
+  else              { dehn.checked  = true;  kraft.checked = false; }
+  root.querySelector('#exdb-muscle-box').disabled = dehn.checked;
 }
 
 // Personal history of one exercise: when it was done and with which weights.
@@ -574,7 +587,7 @@ function _workout_card(s) {
     <figure>
       <table>
         <thead>
-          <tr><th></th><th>Übung</th><th>Sätze</th><th>Reps</th><th>Gewicht</th><th>Kommentar</th><th></th></tr>
+          <tr><th></th><th>Übung</th><th>Sätze</th><th>Reps</th><th>Gewicht</th><th>Gruppe</th><th></th></tr>
         </thead>
         <tbody>
           ${s.exercises.map((ex, idx) => `
@@ -590,11 +603,11 @@ function _workout_card(s) {
                       ${idx === s.exercises.length - 1 ? 'disabled' : ''}
                       onclick="move_exercise(${s.id}, ${ex.id}, 1)">▼</button>
             </td>
-            <td>${esc(ex.exercise_name)}</td>
+            <td>${esc(ex.exercise_name)} ${_hints_btn(ex.exercise_name)}</td>
             <td>${ex.sets}</td>
             <td>${fmt_reps(ex.reps_per_set)}</td>
             <td>${fmt_weight(ex.weight_kg, ex.weight_lbs, _is_per_hand(ex.exercise_name))}</td>
-            <td>${esc(ex.comment || '')}</td>
+            ${_ex_group_muscle_cells(ex.exercise_name)}
             <td class="row-actions">
               <button class="outline secondary" title="Kopieren" onclick="copy_exercise(${ex.id},${s.id})">&#10064;</button>
               <button class="outline secondary" onclick="open_edit_exercise(${ex.id})">&#9998;</button>
@@ -851,9 +864,27 @@ async function do_copy_exercise(exercise_id, session_id) {
   }
 }
 
+// Count the comma-separated values in a "8" / "8,8,7" style field.
+function _csv_count(s) {
+  return String(s || '').split(',').map(x => x.trim()).filter(x => x !== '').length;
+}
+
+// A multi-value reps/weight list must have exactly one entry per set.
+// (A single value is fine — it applies to every set.) Throws on mismatch.
+function _validate_set_lengths(sets, reps_str, weight_str) {
+  const n  = parseInt(sets);
+  const rc = _csv_count(reps_str);
+  if (rc > 1 && rc !== n)
+    throw new Error(`Wiederholungen: ${rc} Werte, aber ${n} Sätze — Anzahl muss übereinstimmen.`);
+  const wc = _csv_count(weight_str);
+  if (wc > 1 && wc !== n)
+    throw new Error(`Gewicht: ${wc} Werte, aber ${n} Sätze — Anzahl muss übereinstimmen.`);
+}
+
 async function open_add_exercise(session_id) {
   await ensure_exercises_loaded();
   open_modal('Übung hinzufügen', tpl_exercise(), async data => {
+    _validate_set_lengths(data.sets, data.reps_str, data.weight_str);
     await api('POST', `/api/workouts/${session_id}/exercises`, data);
     await load_workouts();
     await load_exercise_catalog();
@@ -866,6 +897,7 @@ async function open_edit_exercise(exercise_id) {
   const found = find_exercise(exercise_id);
   if (!found) return;
   open_modal('Übung bearbeiten', tpl_exercise(found.exercise), async data => {
+    _validate_set_lengths(data.sets, data.reps_str, data.weight_str);
     await api('PUT', `/api/exercises/${exercise_id}`, data);
     await load_workouts();
     await load_exercise_catalog();
@@ -1173,6 +1205,15 @@ function _is_per_hand(name) {
   return !!(m && m.per_hand);
 }
 
+// One <td> cell (Gruppe) for an exercise in the workout view. Individual
+// muscles are only shown in the Übungen tab — the group is enough here.
+function _ex_group_muscle_cells(name) {
+  const m = _exercise_meta(name);
+  const dash = '<span style="color:var(--pico-muted-color)">&ndash;</span>';
+  const grp  = (m && m.muscle_group) ? esc(m.muscle_group) : dash;
+  return `<td>${grp}</td>`;
+}
+
 function _food_lookup(name) {
   return foods_db.find(f => f.name.toLowerCase() === name.trim().toLowerCase()) || null;
 }
@@ -1198,6 +1239,8 @@ function on_food_name_change(input) {
     row.dataset.per100fat     = food.fat_per_100g;
     if (food.unit_grams) row.dataset.unitGrams = food.unit_grams;
     else delete row.dataset.unitGrams;
+    if (food.unit_name) row.dataset.unitName = food.unit_name;
+    else delete row.dataset.unitName;
     if (unit_sel) {
       // Preselect the food's own unit — for foods like eggs "2 Stk." is the
       // natural entry; grams remain one click away.
@@ -1211,13 +1254,19 @@ function on_food_name_change(input) {
   } else {
     delete row.dataset.per100kcal;
     delete row.dataset.unitGrams;
-    if (unit_sel) unit_sel.innerHTML = _unit_options_html(null, 'g');
+    delete row.dataset.unitName;
+    if (unit_sel) unit_sel.innerHTML = _unit_options_html(null, unit_sel.value);
     _set_macros_readonly(row, false);
     if (badge) {
       badge.className = 'food-badge' + (input.value.trim() ? ' new' : '');
       badge.textContent = input.value.trim() ? 'neu' : '';
     }
   }
+  // Manually typing an ingredient invalidates any remembered recipe origin, so
+  // the auto-derived meal name reflects what's actually in the list.
+  const tbody = document.getElementById('em-items');
+  if (tbody && !row.dataset.fromRecipe) delete tbody.dataset.recipeName;
+  update_meal_name_placeholder();
 }
 
 function on_amount_change(input) {
@@ -1228,12 +1277,16 @@ function on_amount_change(input) {
   }
 }
 
+// Rounding: calories → whole numbers, nutrition → 1 decimal.
+function r_kcal(v) { return Math.round(Number(v) || 0); }
+function r_nut(v)  { return Math.round((Number(v) || 0) * 10) / 10; }
+
 function _recalc_macros(row, amount_grams) {
   const f = amount_grams / 100;
-  row.querySelector('[name="kcal"]').value      = (parseFloat(row.dataset.per100kcal)    * f).toFixed(1);
-  row.querySelector('[name="protein_g"]').value = (parseFloat(row.dataset.per100protein) * f).toFixed(1);
-  row.querySelector('[name="carbs_g"]').value   = (parseFloat(row.dataset.per100carbs)   * f).toFixed(1);
-  row.querySelector('[name="fat_g"]').value     = (parseFloat(row.dataset.per100fat)     * f).toFixed(1);
+  row.querySelector('[name="kcal"]').value      = r_kcal(parseFloat(row.dataset.per100kcal)    * f);
+  row.querySelector('[name="protein_g"]').value = r_nut(parseFloat(row.dataset.per100protein)  * f);
+  row.querySelector('[name="carbs_g"]').value   = r_nut(parseFloat(row.dataset.per100carbs)    * f);
+  row.querySelector('[name="fat_g"]').value     = r_nut(parseFloat(row.dataset.per100fat)      * f);
 }
 
 function switch_acts_tab(btn) {
@@ -1255,6 +1308,30 @@ function linkify(text) {
     '<a href="$1" target="_blank" rel="noopener">$1</a>');
 }
 
+// Small "?" button that reveals an exercise's Ausführungshinweise on demand —
+// hints are never shown by default in any exercise list. Emits nothing when
+// the exercise has no hints stored.
+function _hints_btn(name) {
+  const m = _exercise_meta(name);
+  if (!m || (!m.hints && !m.comment)) return '';   // shown when video OR hints exist
+  return `<button type="button" class="outline secondary hints-btn" title="Video & Ausführungshinweise"
+            data-ex="${esc(name)}" onclick="show_exercise_hints(this.dataset.ex)">?</button>`;
+}
+
+function show_exercise_hints(name) {
+  const m = _exercise_meta(name);
+  const parts = [];
+  if (m && m.comment)
+    parts.push(`<div style="margin-bottom:.7rem"><strong>Video:</strong> ${linkify(m.comment)}</div>`);
+  if (m && m.hints)
+    parts.push(`<div style="white-space:pre-wrap;font-size:.9rem;line-height:1.5">${linkify(m.hints)}</div>`);
+  const body = parts.length ? parts.join('') : 'Keine Angaben hinterlegt.';
+  open_modal2('Übung: ' + name, `<div>
+    ${body}
+    <div class="form-footer"><button type="button" onclick="close_modal2()">Schließen</button></div>
+  </div>`);
+}
+
 function render_exercises_db() {
   const el = document.getElementById('exercises-db-list');
   if (!el) return;
@@ -1266,33 +1343,67 @@ function render_exercises_db() {
     return;
   }
   const sorted = [...exercise_catalog].sort((a, b) => a.name.localeCompare(b.name));
+  const dash = '<span style="color:var(--pico-muted-color)">&ndash;</span>';
   el.innerHTML = add_btn + `<figure><table>
-    <thead><tr><th>Übung</th><th>Muskeln</th><th>Kommentar</th><th></th></tr></thead>
-    <tbody>${sorted.map(e => `
+    <thead><tr><th>Übung</th><th>Gruppe</th><th>Hauptmuskeln</th><th>Nebenmuskeln</th><th></th></tr></thead>
+    <tbody>${sorted.map(e => {
+      const dehn = e.is_strength === 0;
+      const primary   = dehn ? '' : (e.muscles || '');
+      const secondary = dehn ? '' : (e.secondary_muscles || '');
+      return `
       <tr>
-        <td>${esc(e.name)}</td>
-        <td>${e.muscles ? esc(e.muscles) : '<span style="color:var(--pico-muted-color)">&ndash;</span>'}</td>
-        <td style="white-space:pre-wrap">${e.comment ? linkify(e.comment) : '<span style="color:var(--pico-muted-color)">&ndash;</span>'}</td>
+        <td>${esc(e.name)}${dehn ? ' <small style="color:var(--pico-muted-color)">(Dehnübung)</small>' : ''}</td>
+        <td>${e.muscle_group ? esc(e.muscle_group) : dash}</td>
+        <td>${primary ? esc(primary) : dash}</td>
+        <td>${secondary ? esc(secondary) : dash}</td>
         <td class="row-actions">
+          ${_hints_btn(e.name)}
           <button class="outline secondary" onclick="open_edit_exercise_db(${e.id})">&#9998;</button>
           <button class="outline contrast"  onclick="del_exercise_db(${e.id})">&#10005;</button>
         </td>
-      </tr>`).join('')}
+      </tr>`;}).join('')}
     </tbody>
   </table></figure>`;
 }
+
+const MUSCLE_GROUPS = ['Brust', 'Rücken', 'Schulter', 'Arme', 'Beine', 'Bauch'];
 
 function _exercise_db_modal_body(e) {
   const name    = e ? esc(e.name) : '';
   const comment = e ? esc(e.comment || '') : '';
   const muscles = e ? esc(e.muscles || '') : '';
+  const secondary = e ? esc(e.secondary_muscles || '') : '';
+  const group   = e ? (e.muscle_group || '') : '';
+  const is_dehn = e && e.is_strength === 0;
   return `<div>
     <label>Übung
       <input type="text" id="exdb-name" value="${name}" placeholder="z.B. Bankdrücken" required>
     </label>
-    <label>Trainierte Muskeln
-      <input type="text" id="exdb-muscles" value="${muscles}" placeholder="z.B. Brust, Trizeps, vordere Schulter">
-    </label>
+    <div style="display:flex;align-items:center;gap:1rem;margin-bottom:.6rem;flex-wrap:wrap">
+      <strong style="font-size:.9rem">Art:</strong>
+      <label style="margin:0;display:inline-flex;align-items:center;gap:.35rem">
+        <input type="checkbox" name="art_kraft" onchange="_art_pick(this)" ${is_dehn ? '' : 'checked'}> Kraftübung
+      </label>
+      <label style="margin:0;display:inline-flex;align-items:center;gap:.35rem">
+        <input type="checkbox" name="art_dehn" onchange="_art_pick(this)" ${is_dehn ? 'checked' : ''}> Dehnübung
+      </label>
+    </div>
+    <fieldset id="exdb-muscle-box" ${is_dehn ? 'disabled' : ''} style="border:0;padding:0;margin:0 0 .5rem">
+      <div class="grid">
+        <label>Gruppe
+          <select id="exdb-group">
+            <option value="" ${!group ? 'selected' : ''}>—</option>
+            ${MUSCLE_GROUPS.map(g => `<option value="${g}" ${group === g ? 'selected' : ''}>${g}</option>`).join('')}
+          </select>
+        </label>
+        <label>Hauptmuskeln
+          <input type="text" id="exdb-muscles" value="${muscles}" placeholder="z.B. Latissimus, Bizeps">
+        </label>
+      </div>
+      <label>Nebenmuskeln
+        <input type="text" id="exdb-secondary" value="${secondary}" placeholder="z.B. hintere Schulter">
+      </label>
+    </fieldset>
     <div style="display:flex;align-items:center;gap:1rem;margin-bottom:1rem;flex-wrap:wrap">
       <strong style="font-size:.9rem">Gewichtsangabe:</strong>
       <label style="margin:0;display:inline-flex;align-items:center;gap:.35rem">
@@ -1302,8 +1413,11 @@ function _exercise_db_modal_body(e) {
         <input type="checkbox" name="wm_total" onchange="_wmode_pick(this)" ${e && e.per_hand ? '' : 'checked'}> Gesamt
       </label>
     </div>
-    <label>Kommentar (z.B. YouTube-Link, Technik-Hinweise)
-      <textarea id="exdb-comment" rows="3" placeholder="https://youtu.be/...">${comment}</textarea>
+    <label>Video (z.B. YouTube-Link)
+      <input type="text" id="exdb-comment" value="${comment}" placeholder="https://youtu.be/...">
+    </label>
+    <label>Ausführungshinweise (nur über den „?"-Button sichtbar)
+      <textarea id="exdb-hints" rows="3" placeholder="z.B. Schulterblätter zusammen, kontrolliert ablassen …">${e ? esc(e.hints || '') : ''}</textarea>
     </label>
     <details id="ex-history-box" style="margin-bottom:1rem">
       <summary style="cursor:pointer;font-size:.9rem;color:var(--pico-primary)">Verlauf dieser Übung</summary>
@@ -1338,17 +1452,23 @@ async function del_exercise_db(exercise_id) {
 async function save_exercise_db(exercise_id) {
   const name    = document.getElementById('exdb-name').value.trim();
   const comment = document.getElementById('exdb-comment').value.trim() || null;
-  const muscles = document.getElementById('exdb-muscles').value.trim() || null;
+  const hints   = document.getElementById('exdb-hints').value.trim() || null;
   const per_hand = document.querySelector('#modal-body [name="per_hand"]').checked;
+  const is_strength = document.querySelector('#modal-body [name="art_kraft"]').checked;
+  // Muscles only apply to Kraftübungen — cleared for Dehnübungen
+  const muscles           = is_strength ? (document.getElementById('exdb-muscles').value.trim()   || null) : null;
+  const secondary_muscles = is_strength ? (document.getElementById('exdb-secondary').value.trim() || null) : null;
+  const muscle_group      = is_strength ? (document.getElementById('exdb-group').value || null)             : null;
   if (!name) { alert('Bitte Übungsname eingeben.'); return; }
   const btn = document.getElementById('exdb-save-btn');
   btn.setAttribute('aria-busy', 'true');
   btn.disabled = true;
+  const payload = { name, comment, muscles, per_hand, hints, is_strength, muscle_group, secondary_muscles };
   try {
     if (exercise_id === null) {
-      await api('POST', '/api/exercise-catalog', { name, comment, muscles, per_hand });
+      await api('POST', '/api/exercise-catalog', payload);
     } else {
-      await api('PUT', `/api/exercise-catalog/${exercise_id}`, { name, comment, muscles, per_hand });
+      await api('PUT', `/api/exercise-catalog/${exercise_id}`, payload);
     }
     close_modal();
     await load_exercise_catalog();
@@ -1367,10 +1487,28 @@ async function load_plans() {
   render_plans();
 }
 
+// e.g. "Arme - 2×8 Trizepsdrücken Kabelzug @15, 10 lbs pro Seite"
 function _plan_item_summary(i) {
+  const group = _exercise_meta(i.exercise_name)?.muscle_group;
+  const prefix = group ? `${esc(group)} - ` : '';
   const w = i.weight_str
     ? ` @${i.weight_str} ${i.weight_unit}${_is_per_hand(i.exercise_name) ? ' pro Seite' : ''}` : '';
-  return `${i.sets}×${i.reps_str} ${esc(i.exercise_name)}${w}`;
+  return `${prefix}${i.sets}×${i.reps_str} ${esc(i.exercise_name)}${w}`;
+}
+
+// Collapsible Ausführungshinweise for the plan overview: hidden by default,
+// each hint line becomes a sub-bullet. The toggle is an icon-only span (its
+// triangle is a CSS ::before, never part of the text), so a copy-paste of the
+// expanded plan contains only the exercise lines + the visible bullets — no
+// "Hinweise" label and no <details> chevron.
+function _plan_hints_details(name) {
+  const m = _exercise_meta(name);
+  if (!m || !m.hints) return '';
+  const bullets = m.hints.split('\n').map(l => l.trim()).filter(Boolean)
+    .map(l => `<li>${linkify(l)}</li>`).join('');
+  return `<span class="plan-hint-toggle" title="Hinweise ein-/ausblenden"
+            onclick="this.closest('li').classList.toggle('hint-open')"></span>` +
+         `<ul class="plan-hint-list">${bullets}</ul>`;
 }
 
 function render_plans() {
@@ -1390,7 +1528,7 @@ function render_plans() {
         <td>
           <details class="recipe-details">
             <summary><strong>${esc(p.name)}</strong></summary>
-            <ul class="recipe-ingredients">${p.items.map(i => `<li>${_plan_item_summary(i)}</li>`).join('') || '<li>leer</li>'}</ul>
+            <ul class="recipe-ingredients">${p.items.map(i => `<li>${_plan_item_summary(i)}${_plan_hints_details(i.exercise_name)}</li>`).join('') || '<li>leer</li>'}</ul>
           </details>
         </td>
         <td>${p.items.length}</td>
@@ -1410,8 +1548,9 @@ function _plan_item_row_html(i = null) {
       <button type="button" class="reorder-btn" title="Nach oben"  onclick="move_plan_row(this,-1)">▲</button>
       <button type="button" class="reorder-btn" title="Nach unten" onclick="move_plan_row(this, 1)">▼</button>
     </td>
-    <td><input type="text" name="p-ex" value="${i ? esc(i.exercise_name) : ''}" list="exercises-datalist"
-               placeholder="Übung" onchange="on_plan_exercise_change(this)" style="margin:0;min-width:9rem"></td>
+    <td style="white-space:nowrap"><input type="text" name="p-ex" value="${i ? esc(i.exercise_name) : ''}" list="exercises-datalist"
+               placeholder="Übung" onchange="on_plan_exercise_change(this)" style="margin:0;min-width:8rem;display:inline-block;width:auto">
+        <span class="plan-hint">${i ? _hints_btn(i.exercise_name) : ''}</span></td>
     <td><input type="number" name="p-sets" value="${i ? i.sets : ''}" min="1" max="50" placeholder="3"
                style="margin:0;width:3.8rem"></td>
     <td><input type="text" name="p-reps" value="${i ? esc(i.reps_str) : ''}" placeholder="8 oder 8,8,6"
@@ -1468,6 +1607,7 @@ function on_plan_exercise_change(input) {
   const row  = input.closest('tr');
   const name = input.value.trim();
   row.querySelector('.plan-muscle').textContent = _exercise_meta(name)?.muscles || '';
+  row.querySelector('.plan-hint').innerHTML = _hints_btn(name);
   if (!name) return;
   const last = _last_workout_entry(name);
   if (!last) return;
@@ -1524,11 +1664,13 @@ function _read_plan_rows() {
     const sets = parseInt(g('p-sets').value);
     const reps = g('p-reps').value.trim();
     if (!name || isNaN(sets) || sets < 1 || !reps) continue;
+    const weight = g('p-weight').value.trim() || null;
+    _validate_set_lengths(sets, reps, weight);   // throws on length mismatch
     items.push({
       exercise_name: name,
       sets,
       reps_str:    reps,
-      weight_str:  g('p-weight').value.trim() || null,
+      weight_str:  weight,
       weight_unit: g('p-unit').value,
     });
   }
@@ -1538,7 +1680,9 @@ function _read_plan_rows() {
 async function save_plan(plan_id) {
   const name = document.getElementById('pl-name').value.trim();
   if (!name) { alert('Bitte Plan-Namen eingeben.'); return; }
-  const items = _read_plan_rows();
+  let items;
+  try { items = _read_plan_rows(); }
+  catch (err) { alert('Fehler: ' + err.message); return; }
   const btn = document.getElementById('pl-save-btn');
   btn.setAttribute('aria-busy', 'true');
   btn.disabled = true;
@@ -1729,6 +1873,23 @@ function render_meals() {
             const tp = s.items.reduce((a, i) => a + i.protein_g, 0);
             const tc = s.items.reduce((a, i) => a + i.carbs_g,   0);
             const tf = s.items.reduce((a, i) => a + i.fat_g,     0);
+            const multi = s.items.length > 1;
+            const label = s.meal_name ? esc(s.meal_name) : (s.items[0] ? esc(s.items[0].food_name) : '&ndash;');
+            // Meals with several ingredients collapse to name + cumulative
+            // nutrition; a caret expands the per-ingredient breakdown (edits #11).
+            const name_cell = multi
+              ? `<button class="meal-toggle" aria-expanded="false" onclick="toggle_meal_details(${s.id}, this)"><span class="caret">▸</span> ${label} <small style="color:var(--pico-muted-color)">(${s.items.length})</small></button>`
+              : label;
+            const detail_rows = multi ? s.items.map(i => `
+              <tr class="meal-detail" data-parent="${s.id}" hidden>
+                <td></td>
+                <td style="padding-left:1.6rem;color:var(--pico-muted-color)">${esc(i.food_name)}</td>
+                <td>${Math.round(i.kcal)}</td>
+                <td>${i.protein_g.toFixed(1)}g</td>
+                <td>${i.carbs_g.toFixed(1)}g</td>
+                <td>${i.fat_g.toFixed(1)}g</td>
+                <td></td>
+              </tr>`).join('') : '';
             return `<tr draggable="true" data-meal-id="${s.id}" data-date="${date}"
                 ondragstart="row_drag_start(event)" ondragover="row_drag_over(event)"
                 ondragend="meal_drag_end()">
@@ -1737,7 +1898,7 @@ function render_meals() {
                 <button class="reorder-btn" title="Nach oben"  ${idx === 0             ? 'disabled' : ''} onclick="move_meal_in_day(${s.id},'${date}',-1)">▲</button>
                 <button class="reorder-btn" title="Nach unten" ${idx === ss.length - 1 ? 'disabled' : ''} onclick="move_meal_in_day(${s.id},'${date}', 1)">▼</button>
               </td>
-              <td>${s.meal_name ? esc(s.meal_name) : (s.items[0] ? esc(s.items[0].food_name) : '&ndash;')}</td>
+              <td>${name_cell}</td>
               <td>${Math.round(tk)}</td>
               <td>${tp.toFixed(1)}g</td>
               <td>${tc.toFixed(1)}g</td>
@@ -1747,7 +1908,7 @@ function render_meals() {
                 <button class="outline secondary" title="Bearbeiten" onclick="open_edit_meal(${s.id})">&#9998;</button>
                 <button class="outline contrast"  title="Löschen"    onclick="del_meal(${s.id})">&#10005;</button>
               </td>
-            </tr>`;
+            </tr>${detail_rows}`;
           }).join('')}</tbody>
           <tfoot><tr>
             <td></td>
@@ -1764,6 +1925,16 @@ function render_meals() {
   }).join('');
 }
 
+
+// Expand/collapse the per-ingredient rows of a multi-ingredient meal (edits #11).
+function toggle_meal_details(meal_id, btn) {
+  const open = btn.getAttribute('aria-expanded') === 'true';
+  btn.setAttribute('aria-expanded', String(!open));
+  const caret = btn.querySelector('.caret');
+  if (caret) caret.textContent = open ? '▸' : '▾';
+  document.querySelectorAll(`tr.meal-detail[data-parent="${meal_id}"]`)
+    .forEach(tr => { tr.hidden = open; });
+}
 
 function parse_factor(raw) {
   const s = raw.trim();
@@ -1808,10 +1979,10 @@ function render_foods_db() {
       <tr>
         <td>${esc(f.name)}${category_badge(f)}</td>
         <td style="white-space:nowrap">${basis}</td>
-        <td>${(f.kcal_per_100g * fac).toFixed(1)}</td>
-        <td>${(f.protein_per_100g * fac).toFixed(1)}g</td>
-        <td>${(f.carbs_per_100g * fac).toFixed(1)}g</td>
-        <td>${(f.fat_per_100g * fac).toFixed(1)}g</td>
+        <td>${r_kcal(f.kcal_per_100g * fac)}</td>
+        <td>${r_nut(f.protein_per_100g * fac)}g</td>
+        <td>${r_nut(f.carbs_per_100g * fac)}g</td>
+        <td>${r_nut(f.fat_per_100g * fac)}g</td>
         <td class="row-actions">
           <button class="outline secondary" onclick="open_edit_food(${f.id})">&#9998;</button>
           <button class="outline contrast"  onclick="del_food(${f.id})">&#10005;</button>
@@ -1855,8 +2026,12 @@ function render_recipes() {
       total_g += item.amount_grams || 0;
     }
     // Ingredients visible directly on the overview page (expandable per recipe)
-    const ing_list = r.items.map(i =>
-      `<li>${i.amount_grams} g ${esc(i.food_name)}</li>`).join('');
+    const ing_list = r.items.map(i => {
+      const amt = (i.unit_name && i.amount_units != null)
+        ? `${i.amount_units} ${esc(i.unit_name)}` : `${i.amount_grams} g`;
+      return `<li>${amt} ${esc(i.food_name)}</li>`;
+    }).join('');
+    const portions = r.portions ? ` · ${(+r.portions)} Portion${r.portions === 1 ? '' : 'en'}` : '';
     return `<tr>
       <td>
         <details class="recipe-details">
@@ -1864,11 +2039,11 @@ function render_recipes() {
           <ul class="recipe-ingredients">${ing_list || '<li>keine Zutaten</li>'}</ul>
         </details>
       </td>
-      <td>${r.items.length} Zutat${r.items.length !== 1 ? 'en' : ''} (${Math.round(total_g)}&thinsp;g)</td>
-      <td>${Math.round(tk)}&thinsp;kcal</td>
-      <td>${tp.toFixed(1)}g P</td>
-      <td>${tc.toFixed(1)}g KH</td>
-      <td>${tf.toFixed(1)}g F</td>
+      <td>${r.items.length} Zutat${r.items.length !== 1 ? 'en' : ''} (${Math.round(total_g)}&thinsp;g${portions})</td>
+      <td>${r_kcal(tk)}&thinsp;kcal</td>
+      <td>${r_nut(tp)}g P</td>
+      <td>${r_nut(tc)}g KH</td>
+      <td>${r_nut(tf)}g F</td>
       <td class="row-actions">
         <button class="outline secondary" onclick="open_edit_recipe(${r.id})">&#9998;</button>
         <button class="outline contrast"  onclick="del_recipe(${r.id})">&#10005;</button>
@@ -1881,16 +2056,48 @@ function render_recipes() {
   </table></figure>`;
 }
 
-function _recipe_item_row_html(food_name = '', amount = '') {
-  return `<tr>
-    <td><input type="text" value="${esc(food_name)}" list="foods-datalist" placeholder="Lebensmittel"
-               style="margin:0;min-width:8rem"></td>
-    <td><input type="number" value="${amount}" step="0.1" min="0" placeholder="g"
-               style="margin:0;width:5rem"></td>
+// Recipe ingredient row: name + amount + unit dropdown (g plus the food's own
+// serving unit, that unit preselected when defined). Amount converts to grams
+// on save, exactly like meal items.
+function _recipe_item_row_html(food_name = '', amount = '', unit = 'g') {
+  const food = food_name ? _food_lookup(food_name) : null;
+  const un   = (food && food.unit_name)  ? ` data-unit-name="${esc(food.unit_name)}"` : '';
+  const ug   = (food && food.unit_grams) ? ` data-unit-grams="${food.unit_grams}"` : '';
+  return `<tr${un}${ug}>
+    <td><input type="text" name="ri-food" value="${esc(food_name)}" list="foods-datalist" placeholder="Lebensmittel"
+               onchange="on_recipe_food_change(this)" style="margin:0;min-width:8rem"></td>
+    <td style="white-space:nowrap">
+      <input type="number" name="ri-amt" value="${amount}" step="any" min="0" placeholder="Menge"
+             style="margin:0;width:4.5rem;display:inline-block">
+      <select name="ri-unit" style="margin:0;width:auto;display:inline-block;padding:.2rem 1.4rem .2rem .4rem">${_unit_options_html(food, unit)}</select>
+    </td>
     <td><button type="button" class="outline contrast"
                 style="padding:.15rem .4rem;margin:0;width:auto;font-size:.8rem"
                 onclick="this.closest('tr').remove()">&#10005;</button></td>
   </tr>`;
+}
+
+// Keep a recipe row's unit dropdown in sync with the chosen food.
+function on_recipe_food_change(input) {
+  const row = input.closest('tr');
+  const food = _food_lookup(input.value);
+  const sel = row.querySelector('[name="ri-unit"]');
+  if (food && food.unit_name) { row.dataset.unitName = food.unit_name; } else { delete row.dataset.unitName; }
+  if (food && food.unit_grams) { row.dataset.unitGrams = food.unit_grams; } else { delete row.dataset.unitGrams; }
+  if (sel) sel.innerHTML = _unit_options_html(food, (food && food.unit_name) || sel.value);
+}
+
+// Grams for a recipe row (mirrors _row_grams for meal items).
+function _recipe_row_grams(row) {
+  const val = parseFloat(row.querySelector('[name="ri-amt"]').value);
+  if (isNaN(val)) return NaN;
+  const unit = row.querySelector('[name="ri-unit"]').value;
+  if (unit === 'g') return val;
+  if (unit === row.dataset.unitName) {
+    const ug = parseFloat(row.dataset.unitGrams);
+    return val * (isNaN(ug) ? 100 : ug);
+  }
+  return NaN;
 }
 
 function add_recipe_item_row() {
@@ -1900,13 +2107,20 @@ function add_recipe_item_row() {
 
 function _recipe_modal_body(r) {
   const name = r ? esc(r.name) : '';
-  const rows = r ? r.items.map(i => _recipe_item_row_html(i.food_name, i.amount_grams)).join('') : '';
+  const rows = r ? r.items.map(i =>
+    _recipe_item_row_html(i.food_name,
+      (i.unit_name && i.amount_units != null) ? i.amount_units : i.amount_grams,
+      (i.unit_name && i.amount_units != null) ? i.unit_name : 'g')).join('') : '';
   return `<div>
-    <label>Rezeptname<input type="text" id="rm-name" value="${name}" placeholder="z.B. Chili con Carne" required></label>
+    <div class="grid">
+      <label>Rezeptname<input type="text" id="rm-name" value="${name}" placeholder="z.B. Chili con Carne" required></label>
+      <label>Portionen (optional)<input type="number" id="rm-portions" step="any" min="0"
+             value="${r && r.portions != null ? (+r.portions) : ''}" placeholder="z.B. 4"></label>
+    </div>
     <strong style="font-size:.9rem">Zutaten</strong>
     <div style="overflow-x:auto;margin-top:.4rem">
       <table style="font-size:.85rem;margin:0">
-        <thead><tr><th>Lebensmittel</th><th>Menge (g)</th><th></th></tr></thead>
+        <thead><tr><th>Lebensmittel</th><th>Menge</th><th></th></tr></thead>
         <tbody id="rm-items">${rows}</tbody>
       </table>
     </div>
@@ -1942,22 +2156,30 @@ async function del_recipe(recipe_id) {
 async function save_recipe(recipe_id) {
   const name = document.getElementById('rm-name').value.trim();
   if (!name) { alert('Bitte Rezeptname eingeben.'); return; }
+  const portions = parseFloat(document.getElementById('rm-portions').value);
   const rows = document.querySelectorAll('#rm-items tr');
   const items = [];
   for (const row of rows) {
-    const food = row.cells[0].querySelector('input').value.trim();
-    const grams = parseFloat(row.cells[1].querySelector('input').value);
+    const food = row.querySelector('[name="ri-food"]').value.trim();
+    const grams = _recipe_row_grams(row);
     if (!food || isNaN(grams) || grams <= 0) continue;
-    items.push({ food_name: food, amount_grams: grams });
+    const unit = row.querySelector('[name="ri-unit"]').value;
+    const raw  = parseFloat(row.querySelector('[name="ri-amt"]').value);
+    items.push({
+      food_name: food, amount_grams: grams,
+      amount_units: unit !== 'g' && !isNaN(raw) ? raw : null,
+      unit_name:    unit !== 'g' && !isNaN(raw) ? unit : null,
+    });
   }
+  const payload = { name, items, portions: isNaN(portions) || portions <= 0 ? null : portions };
   const btn = document.getElementById('rm-save-btn');
   btn.setAttribute('aria-busy', 'true');
   btn.disabled = true;
   try {
     if (recipe_id === null) {
-      await api('POST', '/api/recipes', { name, items });
+      await api('POST', '/api/recipes', payload);
     } else {
-      await api('PUT', `/api/recipes/${recipe_id}`, { name, items });
+      await api('PUT', `/api/recipes/${recipe_id}`, payload);
     }
     close_modal();
     await load_recipes();
@@ -1981,42 +2203,152 @@ async function open_add_recipe_to_meal(preselect_id = null) {
   }
   const opts = recipes.map(r => {
     const total_g = r.items.reduce((sum, i) => sum + (i.amount_grams || 0), 0);
-    return `<option value="${r.id}" data-total="${total_g}" ${r.id === preselect_id ? 'selected' : ''}>${esc(r.name)} (${Math.round(total_g)}&thinsp;g gesamt)</option>`;
+    return `<option value="${r.id}" data-total="${total_g}" data-portions="${r.portions || ''}" ${r.id === preselect_id ? 'selected' : ''}>${esc(r.name)} (${Math.round(total_g)}&thinsp;g gesamt)</option>`;
   }).join('');
   open_modal2('Rezept hinzufügen', `<div>
     <label>Rezept<select id="ra-select" onchange="update_recipe_add_hint()">${opts}</select></label>
-    <label>Portion (g)
-      <input type="number" id="ra-grams" step="1" min="1" placeholder="z.B. 300" autofocus>
-      <small id="ra-hint" style="color:var(--pico-muted-color)"></small>
-    </label>
-    <div class="form-footer">
+    <div class="grid" style="margin-bottom:.25rem">
+      <label style="margin:0">Menge
+        <input type="number" id="ra-amount" step="any" min="0" placeholder="z.B. 300" autofocus>
+      </label>
+      <label style="margin:0">Einheit
+        <select id="ra-mode" onchange="update_recipe_add_hint()">
+          <option value="g">Gramm</option>
+          <option value="portion">Portionen</option>
+        </select>
+      </label>
+    </div>
+    <small id="ra-hint" style="color:var(--pico-muted-color)"></small>
+    <div class="form-footer" style="flex-wrap:wrap;gap:.5rem;margin-top:.75rem">
       <button type="button" class="secondary outline" onclick="close_modal2()">Abbrechen</button>
-      <button type="button" onclick="apply_recipe_to_meal()">Hinzufügen</button>
+      <button type="button" class="secondary" style="width:auto" onclick="open_recipe_adapt()">Anpassen…</button>
+      <button type="button" style="width:auto" onclick="apply_recipe_to_meal()">Original hinzufügen</button>
     </div>
   </div>`);
   update_recipe_add_hint();
+}
+
+// Resolve the entered amount + unit-mode into a scale factor relative to the
+// stored recipe (1.0 = the recipe exactly as saved). Returns null if it can't
+// be computed (e.g. portions requested but the recipe defines none).
+function _recipe_scale(r, mode, amount) {
+  if (isNaN(amount) || amount <= 0) return null;
+  if (mode === 'portion') {
+    if (!r.portions || r.portions <= 0) return null;
+    return amount / r.portions;
+  }
+  const total = r.items.reduce((s, i) => s + (i.amount_grams || 0), 0);
+  return total > 0 ? amount / total : null;
+}
+
+// Adapt a recipe just for this day: edit the (scaled) ingredient amounts before
+// adding. Changes affect only the meal being logged — the stored recipe is
+// never modified.
+function open_recipe_adapt() {
+  const sel       = document.getElementById('ra-select');
+  const recipe_id = parseInt(sel.value);
+  const mode      = document.getElementById('ra-mode')?.value || 'g';
+  const amount    = parseFloat(document.getElementById('ra-amount').value);
+  const r = recipes.find(x => x.id === recipe_id);
+  if (!r) return;
+  const scale = _recipe_scale(r, mode, amount);
+  if (scale === null) {
+    alert(mode === 'portion'
+      ? 'Bitte Portionen eingeben (Rezept muss Portionen hinterlegt haben).'
+      : 'Bitte Menge eingeben.');
+    return;
+  }
+  const rows = r.items.map(i => {
+    const amt = Math.round(i.amount_grams * scale * 10) / 10;
+    return `<tr>
+      <td>${esc(i.food_name)}<input type="hidden" name="ra-food" value="${esc(i.food_name)}"></td>
+      <td style="white-space:nowrap">
+        <input type="number" name="ra-amt" value="${amt}" step="0.1" min="0" style="margin:0;width:5.5rem"> g
+      </td>
+    </tr>`;
+  }).join('');
+  open_modal2('Rezept anpassen: ' + r.name, `<div data-recipe-name="${esc(r.name)}">
+    <p style="font-size:.85rem;color:var(--pico-muted-color)">
+      Änderungen gelten nur für diesen Tag — das gespeicherte Rezept bleibt unverändert.
+    </p>
+    <table style="font-size:.85rem;margin:0">
+      <thead><tr><th>Zutat</th><th>Menge</th></tr></thead>
+      <tbody id="ra-adapt">${rows}</tbody>
+    </table>
+    <div class="form-footer" style="margin-top:.75rem">
+      <button type="button" class="secondary outline" onclick="close_modal2()">Abbrechen</button>
+      <button type="button" onclick="apply_recipe_adapted()">Übernehmen</button>
+    </div>
+  </div>`);
+}
+
+function apply_recipe_adapted() {
+  const rows = [...document.querySelectorAll('#ra-adapt tr')];
+  const rname = document.querySelector('#modal2-body [data-recipe-name]')?.dataset.recipeName;
+  close_modal2();
+  if (rname) _tag_recipe_name(rname);
+  const round1 = v => Math.round(v * 10) / 10;
+  for (const row of rows) {
+    const food   = row.querySelector('[name="ra-food"]').value;
+    const amount = parseFloat(row.querySelector('[name="ra-amt"]').value);
+    if (!food || isNaN(amount) || amount <= 0) continue;
+    const f = _food_lookup(food);
+    let kcal = 0, protein = 0, carbs = 0, fat = 0;
+    if (f) {
+      const fac = amount / 100;
+      kcal    = r_kcal(f.kcal_per_100g    * fac);
+      protein = round1(f.protein_per_100g * fac);
+      carbs   = round1(f.carbs_per_100g   * fac);
+      fat     = round1(f.fat_per_100g     * fac);
+    }
+    add_em_item_row(food, amount, kcal, protein, carbs, fat);
+  }
+  update_meal_name_placeholder();
 }
 
 function update_recipe_add_hint() {
   const sel  = document.getElementById('ra-select');
   const hint = document.getElementById('ra-hint');
   if (!sel || !hint) return;
-  const total = parseFloat(sel.options[sel.selectedIndex]?.dataset.total) || 0;
-  hint.textContent = total > 0 ? `Rezept gesamt: ${Math.round(total)} g` : '';
+  const total    = parseFloat(sel.options[sel.selectedIndex]?.dataset.total) || 0;
+  const portions = parseFloat(sel.options[sel.selectedIndex]?.dataset.portions) || 0;
+  const mode_sel = document.getElementById('ra-mode');
+  const mode     = mode_sel ? mode_sel.value : 'g';
+  // Portions option is only meaningful when the recipe defines a portion count.
+  if (mode_sel) {
+    const popt = [...mode_sel.options].find(o => o.value === 'portion');
+    if (popt) {
+      popt.disabled = portions <= 0;
+      if (portions <= 0 && mode_sel.value === 'portion') mode_sel.value = 'g';
+    }
+  }
+  const parts = [];
+  if (total > 0)    parts.push(`Rezept gesamt: ${Math.round(total)} g`);
+  if (portions > 0) parts.push(`${Math.round(portions * 10) / 10} Portion(en)`);
+  else if (mode === 'portion') parts.push('— keine Portionen hinterlegt');
+  if (portions > 0 && mode === 'portion') {
+    parts.push(`1 Portion ≈ ${Math.round(total / portions)} g`);
+  }
+  hint.textContent = parts.join(' · ');
 }
 
 async function apply_recipe_to_meal() {
   await ensure_foods_loaded();
   const sel      = document.getElementById('ra-select');
   const recipe_id = parseInt(sel.value);
-  const grams    = parseFloat(document.getElementById('ra-grams').value);
-  if (isNaN(grams) || grams <= 0) { alert('Bitte Menge eingeben.'); return; }
+  const mode     = document.getElementById('ra-mode')?.value || 'g';
+  const amount_in = parseFloat(document.getElementById('ra-amount').value);
   const r = recipes.find(x => x.id === recipe_id);
   if (!r) return;
-  const total_g = r.items.reduce((sum, i) => sum + (i.amount_grams || 0), 0);
-  if (total_g <= 0) { alert('Rezept hat keine Zutaten mit Gewicht.'); return; }
-  const scale = grams / total_g;
+  const scale = _recipe_scale(r, mode, amount_in);
+  if (scale === null) {
+    alert(mode === 'portion'
+      ? 'Bitte Portionen eingeben (Rezept muss Portionen hinterlegt haben).'
+      : 'Bitte Menge eingeben.');
+    return;
+  }
   close_modal2();
+  _tag_recipe_name(r.name);
   const round1 = v => Math.round(v * 10) / 10;
   for (const item of r.items) {
     const amount = round1(item.amount_grams * scale);
@@ -2024,19 +2356,28 @@ async function apply_recipe_to_meal() {
     let kcal = 0, protein = 0, carbs = 0, fat = 0;
     if (food) {
       const f = amount / 100;
-      kcal    = round1(food.kcal_per_100g    * f);
+      kcal    = r_kcal(food.kcal_per_100g    * f);
       protein = round1(food.protein_per_100g * f);
       carbs   = round1(food.carbs_per_100g   * f);
       fat     = round1(food.fat_per_100g     * f);
     }
     add_em_item_row(item.food_name, amount, kcal, protein, carbs, fat);
   }
+  update_meal_name_placeholder();
+}
+
+// Remember which recipe the current ingredient rows came from, so the meal name
+// can be auto-derived from it (edits.txt #10). Only meaningful inside the meal
+// editor (em-items); harmless elsewhere.
+function _tag_recipe_name(name) {
+  const tbody = document.getElementById('em-items');
+  if (tbody) tbody.dataset.recipeName = name;
 }
 
 
 // Units offered for "Nährwerte je …". Grams are the canonical storage unit;
 // everything else is a serving unit whose weight MAY be given (optional).
-const FOOD_UNITS = ['g', 'Stk.', 'Scheibe', 'Handvoll', 'EL', 'TL', 'Portion'];
+const FOOD_UNITS = ['g', 'Stk.', 'Scheibe', 'Handvoll', 'EL', 'TL', 'Portion', 'Dose/Glas'];
 
 function _food_modal_body(f) {
   const name    = f ? esc(f.name) : '';
@@ -2184,15 +2525,41 @@ function open_new_meal() {
   open_new_meal_for(today_local());
 }
 
-// Suggestions for the meal-name field: standard meal labels + all recipe
-// names. Picking a recipe name offers to pull in its ingredients directly.
-const MEAL_NAME_SUGGESTIONS = ['Frühstück', 'Mittagessen', 'Abendessen', 'Snack'];
+// "Tag hinzufügen": pick a day that has no entries yet, then open the meal
+// editor for it. Meals themselves are added per day via "+ Mahlzeit".
+// (Native date inputs can't grey individual dates, so existing days are
+// rejected on submit instead.)
+function open_add_day() {
+  const existing = new Set(meals.map(m => m.date));
+  const def = today_local();
+  const days_hint = existing.size
+    ? `Bereits vorhanden: ${[...existing].sort((a, b) => b.localeCompare(a)).slice(0, 8).join(', ')}${existing.size > 8 ? ' …' : ''}`
+    : '';
+  open_modal('Tag hinzufügen', `<form>
+    <label>Neuer Tag
+      <input type="date" name="date" value="${existing.has(def) ? '' : def}" required>
+      <small style="color:var(--pico-muted-color)">
+        Vorhandene Tage bitte beim jeweiligen Tag über „+ Mahlzeit" ergänzen.<br>${days_hint}
+      </small>
+    </label>
+    <div class="form-footer">
+      <button type="button" class="secondary outline" onclick="close_modal()">Abbrechen</button>
+      <button type="submit">Weiter</button>
+    </div>
+  </form>`, data => {
+    if (!data.date) throw new Error('Bitte ein Datum wählen.');
+    if (existing.has(data.date))
+      throw new Error('Dieser Tag existiert bereits — bitte über „+ Mahlzeit" ergänzen.');
+    // open the meal editor for the new day once this dialog has closed
+    setTimeout(() => open_new_meal_for(data.date), 0);
+  });
+}
 
+// Meal-name suggestions: recipe names only. Picking a recipe name offers to
+// pull in its ingredients directly.
 function _mealname_datalist_html() {
-  const recipe_opts = recipes.map(r => `<option value="${esc(r.name)}">`).join('');
   return `<datalist id="mealnames-datalist">
-    ${MEAL_NAME_SUGGESTIONS.map(n => `<option value="${n}">`).join('')}
-    ${recipe_opts}
+    ${recipes.map(r => `<option value="${esc(r.name)}">`).join('')}
   </datalist>`;
 }
 
@@ -2215,16 +2582,15 @@ async function open_new_meal_for(date) {
   }).join('');
 
   const body = `
-    <div class="grid" style="column-gap:1rem">
-      <label style="margin-bottom:.5rem">Datum
-        <input type="date" id="em-date" value="${date}" required>
-      </label>
-      <label style="margin-bottom:.5rem">Name
-        <input type="text" id="em-name" placeholder="z.B. Frühstück oder Rezeptname"
-               list="mealnames-datalist" onchange="on_meal_name_change(this)">
-      </label>
-    </div>
-    ${_mealname_datalist_html()}
+    <label style="margin-bottom:.5rem">Datum
+      <input type="date" id="em-date" value="${date}" readonly
+             title="Der Tag wird über „+ Tag hinzufügen" bzw. „+ Mahlzeit" bestimmt">
+    </label>
+
+    <button type="button" class="em-recipe-btn" onclick="open_add_recipe_to_meal()">
+      🍽️ Aus Rezept hinzufügen…
+    </button>
+
     ${meals.length ? `
     <details style="margin-bottom:.75rem">
       <summary style="cursor:pointer;color:var(--pico-primary);font-size:.9rem;user-select:none">
@@ -2242,7 +2608,6 @@ async function open_new_meal_for(date) {
                 onclick="import_meal_rows()">Importieren</button>
       </div>
     </details>` : ''}
-    <hr style="margin:.25rem 0 .75rem">
     <strong>Zutaten</strong>
     <div style="overflow-x:auto;margin-top:.4rem">
       <table style="font-size:.85rem;margin:0">
@@ -2259,11 +2624,14 @@ async function open_new_meal_for(date) {
               onclick="add_em_item_row()">+ Zutat</button>
       <button type="button" class="secondary outline"
               style="width:auto;font-size:.85rem;margin:0"
-              onclick="open_add_recipe_to_meal()">+ Rezept</button>
-      <button type="button" class="secondary outline"
-              style="width:auto;font-size:.85rem;margin:0"
-              onclick="add_em_skip_row()" title="Einmalige Mahlzeit — nicht in Lebensmitteldatenbank speichern">+ Einmalig</button>
+              onclick="add_em_skip_row()" title="Einmalige Zutat — nicht in Lebensmitteldatenbank speichern und nicht daraus vorschlagen">+ Einmalig</button>
     </div>
+    <hr style="margin:.25rem 0 .75rem">
+    <label style="margin-bottom:.5rem">Name <small style="color:var(--pico-muted-color)">(optional)</small>
+      <input type="text" id="em-name" placeholder="wird automatisch aus den Zutaten gebildet"
+             list="mealnames-datalist" onchange="on_meal_name_change(this)">
+    </label>
+    ${_mealname_datalist_html()}
     <div class="form-footer">
       <button type="button" class="secondary outline" onclick="close_modal()">Abbrechen</button>
       <button type="button" id="em-save-btn" onclick="save_new_meal()">Speichern</button>
@@ -2272,54 +2640,88 @@ async function open_new_meal_for(date) {
   open_modal('Neue Mahlzeit', body, null);
 }
 
-// Unit <select> options for a row: grams always, plus the food's serving
-// unit (e.g. "Stk.") when one is defined in the foods DB.
-function _unit_options_html(food, selected = 'g') {
-  let opts = `<option value="g" ${selected === 'g' ? 'selected' : ''}>g</option>`;
-  if (food && food.unit_name) {
-    opts += `<option value="${esc(food.unit_name)}" ${selected === food.unit_name ? 'selected' : ''}>${esc(food.unit_name)}</option>`;
-  }
-  return opts;
+// Auto-derived meal name (edits.txt #10): a recipe import uses the recipe name;
+// a single ingredient uses that ingredient's name; otherwise the ingredient
+// names are concatenated. Used both as the live placeholder and as the fallback
+// when the user leaves the name blank.
+function _derive_meal_name() {
+  const tbody = document.getElementById('em-items');
+  if (!tbody) return '';
+  if (tbody.dataset.recipeName) return tbody.dataset.recipeName;
+  const names = [...tbody.querySelectorAll('[name="food_name"]')]
+    .map(i => i.value.trim()).filter(Boolean);
+  if (names.length === 1) return names[0];
+  if (names.length > 1)  return names.join(', ');
+  return '';
 }
 
-// Amount of a row in grams, regardless of the unit it was entered in.
-// Foods whose unit weight is unknown use a virtual 100 g per unit — the same
-// basis their per-100g macros were normalised against, so results are exact.
+function update_meal_name_placeholder() {
+  const inp = document.getElementById('em-name');
+  if (!inp) return;
+  const derived = _derive_meal_name();
+  inp.placeholder = derived || 'wird automatisch aus den Zutaten gebildet';
+}
+
+// Unit <select> options for a row: the full serving-unit list (g, Stk., …),
+// plus the food's own custom unit if it isn't already one of them.
+function _unit_options_html(food, selected = 'g') {
+  const units = [...FOOD_UNITS];
+  if (food && food.unit_name && !units.includes(food.unit_name)) units.push(food.unit_name);
+  return units.map(u => `<option value="${esc(u)}" ${u === selected ? 'selected' : ''}>${esc(u)}</option>`).join('');
+}
+
+// Amount of a row in grams. Only 'g' and the food's OWN serving unit convert
+// (its weight, or a virtual 100 g if none is set). Any other unit has no known
+// grams-per-unit → NaN, and the macros are entered manually for that item.
 function _row_grams(row) {
   const val = parseFloat(row.querySelector('[name="amount_grams"]').value);
   if (isNaN(val)) return NaN;
   const unit = row.querySelector('[name="unit"]').value;
   if (unit === 'g') return val;
-  const ug = parseFloat(row.dataset.unitGrams);
-  return val * (isNaN(ug) ? 100 : ug);
+  if (unit === row.dataset.unitName) {
+    const ug = parseFloat(row.dataset.unitGrams);
+    return val * (isNaN(ug) ? 100 : ug);
+  }
+  return NaN;
 }
 
 function on_unit_change(sel) {
   const row = sel.closest('tr');
-  const g   = _row_grams(row);
-  if (!isNaN(g) && g > 0 && row.dataset.per100kcal !== undefined) _recalc_macros(row, g);
+  if (row.dataset.per100kcal === undefined) return;   // one-time item → macros are manual
+  const g = _row_grams(row);
+  if (!isNaN(g)) {
+    _set_macros_readonly(row, true);                  // convertible → auto-compute
+    if (g > 0) _recalc_macros(row, g);
+  } else {
+    _set_macros_readonly(row, false);                 // no conversion → enter macros by hand
+  }
 }
 
 function _item_row_html(item_id, food_name = '', amount = '', kcal = '', protein = '', carbs = '', fat = '', per100 = null, skip_db = false, unit = 'g') {
+  // Keep field values at the display precision so step-constrained inputs accept them.
+  const _rv = (v, f) => (v === '' || v == null) ? '' : f(v);
+  kcal = _rv(kcal, r_kcal); protein = _rv(protein, r_nut); carbs = _rv(carbs, r_nut); fat = _rv(fat, r_nut);
   const food = food_name ? _food_lookup(food_name) : null;
   const pa   = per100 ? ` data-per100kcal="${per100.kcal}" data-per100protein="${per100.protein}" data-per100carbs="${per100.carbs}" data-per100fat="${per100.fat}"` : '';
   const ug   = (food && food.unit_grams) ? ` data-unit-grams="${food.unit_grams}"` : '';
+  const un   = (food && food.unit_name)  ? ` data-unit-name="${esc(food.unit_name)}"` : '';
   const skip_attr  = skip_db ? ' data-skip-db="true"' : '';
   const badge_cls  = skip_db ? 'skip' : (per100 ? 'match' : (food_name ? 'new' : ''));
   const badge_text = skip_db ? 'einmalig' : (per100 ? '✓' : (food_name ? 'neu' : ''));
-  return `<tr data-item-id="${item_id}"${pa}${ug}${skip_attr}>
+  return `<tr data-item-id="${item_id}"${pa}${ug}${un}${skip_attr}>
     <td style="white-space:nowrap">
-      <input type="text" name="food_name" value="${esc(food_name)}" placeholder="Lebensmittel" list="foods-datalist"
-             onchange="on_food_name_change(this)" style="margin:0;min-width:8rem;display:inline-block;width:auto">
+      <input type="text" name="food_name" value="${esc(food_name)}" placeholder="Lebensmittel"
+             ${skip_db ? 'oninput="update_meal_name_placeholder()"' : 'list="foods-datalist" onchange="on_food_name_change(this)"'}
+             style="margin:0;min-width:8rem;display:inline-block;width:auto">
       <span class="food-badge ${badge_cls}">${badge_text}</span>
     </td>
     <td style="white-space:nowrap">
-      <input type="number" name="amount_grams" value="${amount}" step="0.1" min="0" placeholder="Menge"
+      <input type="number" name="amount_grams" value="${amount}" step="any" min="0" placeholder="Menge"
              oninput="on_amount_change(this)" style="margin:0;width:4.5rem;display:inline-block">
       <select name="unit" onchange="on_unit_change(this)"
               style="margin:0;width:auto;display:inline-block;padding:.2rem 1.4rem .2rem .4rem">${_unit_options_html(food, unit)}</select>
     </td>
-    <td><input type="number" name="kcal"         value="${kcal}"     step="0.1" placeholder="kcal" style="margin:0;width:4.5rem" ${per100 ? 'readonly class="macro-auto"' : ''}></td>
+    <td><input type="number" name="kcal"         value="${kcal}"     step="1"   placeholder="kcal" style="margin:0;width:4.5rem" ${per100 ? 'readonly class="macro-auto"' : ''}></td>
     <td><input type="number" name="protein_g"    value="${protein}"  step="0.1" placeholder="g"    style="margin:0;width:4rem"   ${per100 ? 'readonly class="macro-auto"' : ''}></td>
     <td><input type="number" name="carbs_g"      value="${carbs}"    step="0.1" placeholder="g"    style="margin:0;width:4rem"   ${per100 ? 'readonly class="macro-auto"' : ''}></td>
     <td><input type="number" name="fat_g"        value="${fat}"      step="0.1" placeholder="g"    style="margin:0;width:4rem"   ${per100 ? 'readonly class="macro-auto"' : ''}></td>
@@ -2339,12 +2741,14 @@ function add_em_item_row(food_name = '', amount = '', kcal = '', protein = '', c
   tbody.insertAdjacentHTML('beforeend', _item_row_html('new', food_name, amount, kcal, protein, carbs, fat, per100));
   const row = tbody.lastElementChild;
   if (!food_name) row.querySelector('input').focus();
+  update_meal_name_placeholder();
 }
 
 function add_em_skip_row() {
   const tbody = document.getElementById('em-items');
   tbody.insertAdjacentHTML('beforeend', _item_row_html('new', '', '', '', '', '', '', null, true));
   tbody.lastElementChild.querySelector('input').focus();
+  update_meal_name_placeholder();
 }
 
 function import_meal_rows() {
@@ -2375,11 +2779,12 @@ function import_meal_rows() {
       row.dataset.per100fat     = food.fat_per_100g;
     }
   });
+  update_meal_name_placeholder();
 }
 
 async function save_new_meal() {
   const date = document.getElementById('em-date').value;
-  const name = document.getElementById('em-name').value.trim();
+  const name = document.getElementById('em-name').value.trim() || _derive_meal_name();
   if (!date) { alert('Datum fehlt.'); return; }
 
   const btn = document.getElementById('em-save-btn');
@@ -2428,7 +2833,7 @@ async function open_edit_meal(session_id) {
       </label>
       <label style="margin-bottom:.5rem">Name
         <input type="text" id="em-name" value="${esc(s.meal_name || (s.items.length === 1 ? s.items[0].food_name : ''))}"
-               placeholder="z.B. Frühstück oder Rezeptname" list="mealnames-datalist" onchange="on_meal_name_change(this)">
+               placeholder="z.B. Chili oder Rezeptname" list="mealnames-datalist" onchange="on_meal_name_change(this)">
       </label>
     </div>
     ${_mealname_datalist_html()}
@@ -2871,18 +3276,171 @@ async function load_analysis() {
       body_weight = await api('GET', '/api/body/weight');
     }
   } catch { /* body weight simply unavailable */ }
+  on_ana_type_change();   // populate series + plot dropdowns for the current Typ, then draw
+}
+
+// Plots available per Typ (dropdown 3 depends on dropdown 1).
+const ANA_KINDS = {
+  uebung:  [['verlauf', 'Gewichts-Verlauf'], ['volumen', 'Volumen pro Woche'],
+            ['volumen_workout', 'Volumen pro Workout'], ['reps', 'Wiederholungen']],
+  muskel:  [['sets_workout', 'Sätze pro Workout']],
+  koerper: [['koerper', 'Verlauf']],
+};
+
+// Dropdown 1 (Typ) changed → repopulate dropdowns 2 (series) and 3 (plot).
+function on_ana_type_change() {
+  const type = document.getElementById('ana-type').value;
+  _fill_analysis_series(type);
+  _fill_analysis_kind(type);
+  // Körpergewicht has no sub-selection → hide the series picker
+  const field = document.getElementById('ana-series-field');
+  if (field) field.style.display = (type === 'koerper') ? 'none' : '';
   render_analysis();
 }
 
-// Dispatch between the time/weight line chart and the weekly-volume bars.
-// The series dropdown is refilled to match the chart kind (weight-progression
-// lists only weighted exercises; volume also lists pure-bodyweight ones).
-function render_analysis() {
-  const kind = document.getElementById('ana-kind')?.value || 'verlauf';
-  _fill_analysis_selector(kind);
-  if (kind === 'volumen') render_volume_chart();
-  else render_analysis_chart();
+function _fill_analysis_kind(type) {
+  const sel = document.getElementById('ana-kind');
+  const prev = sel.value;
+  sel.innerHTML = (ANA_KINDS[type] || []).map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
+  if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
 }
+
+function _fill_analysis_series(type) {
+  const sel = document.getElementById('ana-series');
+  const prev = sel.value;
+  if (type === 'muskel') {
+    const groups = _all_muscle_groups();
+    const muscles = _all_muscles();
+    if (!groups.length && !muscles.length) {
+      sel.innerHTML = '<option value="">— keine Muskeln hinterlegt —</option>';
+    } else {
+      const gOpts = groups.map(g => `<option value="mg:${esc(g)}">${esc(g)}</option>`).join('');
+      const mOpts = muscles.map(m => `<option value="mu:${esc(m)}">${esc(m)}</option>`).join('');
+      sel.innerHTML =
+        (gOpts ? `<optgroup label="Muskelgruppe">${gOpts}</optgroup>` : '') +
+        (mOpts ? `<optgroup label="Muskel">${mOpts}</optgroup>` : '');
+    }
+  } else if (type === 'koerper') {
+    sel.innerHTML = '<option value="bw">Körpergewicht</option>';
+  } else {   // uebung — Kraftübungen only (Dehnübungen aren't plotted)
+    const names = new Set();
+    for (const s of workouts) for (const ex of s.exercises)
+      if (_is_strength_ex(ex.exercise_name)) names.add(ex.exercise_name);
+    sel.innerHTML = [...names].sort((a, b) => a.localeCompare(b))
+      .map(n => `<option value="ex:${esc(n)}">${esc(n)}</option>`).join('')
+      || '<option value="">— keine Kraftübungen —</option>';
+  }
+  if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
+}
+
+// An exercise counts as a Kraftübung unless explicitly flagged Dehnübung.
+function _is_strength_ex(name) {
+  const m = _exercise_meta(name);
+  return !m || m.is_strength !== 0;
+}
+
+// Date range across ALL workouts — used so every time axis spans the full
+// training history by default (not just the selected series' active range).
+function _workout_date_range() {
+  if (!workouts.length) return null;
+  let min = workouts[0].date, max = workouts[0].date;
+  for (const s of workouts) { if (s.date < min) min = s.date; if (s.date > max) max = s.date; }
+  return { min, max };
+}
+
+function _bw_hint(name) {
+  return `<p class="empty">„${esc(name)}" ist eine reine Körpergewichtsübung — ` +
+         `kein Gewicht/Volumen verfügbar. Bitte „Wiederholungen" wählen.</p>`;
+}
+
+// Dispatch: Typ + Plot decide which chart to draw.
+// Custom x-axis (time) window; null = full workout history.
+let ana_x_range = null;
+
+function _effective_range() {
+  return ana_x_range || _workout_date_range();
+}
+
+// Drop bars outside the active range (bars carry a full `date`).
+function _range_bars(res) {
+  if (!ana_x_range || !res || !res.bars) return res;
+  const { min, max } = ana_x_range;
+  return { ...res, bars: res.bars.filter(b => b.date >= min && b.date <= max) };
+}
+
+function render_analysis() {
+  const el   = document.getElementById('analysis-chart');
+  const type = document.getElementById('ana-type')?.value || 'uebung';
+  const kind = document.getElementById('ana-kind')?.value || 'verlauf';
+  const ser  = document.getElementById('ana-series')?.value || '';
+  const range = _effective_range();
+
+  if (type === 'koerper') {
+    render_line_chart(el, _bodyweight_points(), 'Körpergewicht', ana_x_range || undefined);
+  } else if (type === 'muskel') {
+    if (!ser.startsWith('mg:') && !ser.startsWith('mu:')) {
+      el.innerHTML = '<p class="empty">Keine Muskelgruppe/Muskeln hinterlegt — bitte im Übungen-Tab eintragen.</p>';
+    } else {
+      const is_group = ser.startsWith('mg:');
+      const what = ser.slice(3);
+      render_stacked_bars(el, _range_bars(_stacked_sets(ser)),
+        `Sätze pro Workout — ${is_group ? 'Gruppe' : 'Muskel'}: ${esc(what)}`);
+    }
+  } else if (!ser.startsWith('ex:')) {
+    el.innerHTML = '<p class="empty">Bitte eine Übung wählen.</p>';
+  } else {
+    const name  = ser.slice(3);
+    const is_bw = _is_bodyweight(name);
+    if (kind === 'reps') {
+      render_line_chart(el, _reps_points(name), 'Wiederholungen: ' + name, range);
+    } else if (is_bw) {
+      el.innerHTML = _bw_hint(name);
+    } else if (kind === 'verlauf') {
+      render_line_chart(el, _weight_points(name), 'Gewichts-Verlauf: ' + name, range);
+    } else if (kind === 'volumen') {
+      _render_bars(el, _range_bars(_volume_weeks(name)), 'Wöchentliches Volumen', '');
+    } else if (kind === 'volumen_workout') {
+      _render_bars(el, _range_bars(_volume_all_workouts(name)), 'Volumen pro Workout', '');
+    }
+  }
+  _render_range_bar();
+}
+
+// ── x-axis range control (small button under the chart) ──
+function _render_range_bar() {
+  const bar = document.getElementById('ana-range-bar');
+  if (!bar) return;
+  const eff = _effective_range();
+  const label = eff ? `${eff.min} – ${eff.max}` : 'ganzer Zeitraum';
+  bar.innerHTML =
+    `<button class="outline secondary" style="width:auto;margin:0;font-size:.8rem" onclick="open_range_picker()">📅 Zeitraum: ${label}</button>` +
+    (ana_x_range ? ` <button class="outline secondary" style="width:auto;margin:0;font-size:.8rem" onclick="reset_range()">Ganzer Zeitraum</button>` : '');
+}
+
+function open_range_picker() {
+  const eff = _effective_range() || { min: '', max: '' };
+  open_modal2('Zeitraum anpassen', `<div>
+    <div class="grid">
+      <label>Von<input type="date" id="ana-range-from" value="${eff.min}"></label>
+      <label>Bis<input type="date" id="ana-range-to"   value="${eff.max}"></label>
+    </div>
+    <div class="form-footer">
+      <button type="button" class="secondary outline" onclick="close_modal2()">Abbrechen</button>
+      <button type="button" onclick="apply_range()">Übernehmen</button>
+    </div>
+  </div>`);
+}
+
+function apply_range() {
+  const from = document.getElementById('ana-range-from').value;
+  const to   = document.getElementById('ana-range-to').value;
+  if (!from || !to) { alert('Bitte Von und Bis wählen.'); return; }
+  ana_x_range = from <= to ? { min: from, max: to } : { min: to, max: from };
+  close_modal2();
+  render_analysis();
+}
+
+function reset_range() { ana_x_range = null; render_analysis(); }
 
 // True if the exercise entry has at least one real (non-null) weight value.
 function _has_weight(ex) {
@@ -2896,31 +3454,6 @@ function _is_bodyweight(name) {
     for (const ex of s.exercises)
       if (ex.exercise_name === name && _has_weight(ex)) return false;
   return true;
-}
-
-function _fill_analysis_selector(kind = 'verlauf') {
-  const sel  = document.getElementById('ana-series');
-  const prev = sel.value;
-  const weighted = new Set(), bwonly = new Set();
-  for (const s of workouts) {
-    for (const ex of s.exercises) {
-      if (_has_weight(ex)) weighted.add(ex.exercise_name);
-      else                 bwonly.add(ex.exercise_name);
-    }
-  }
-  for (const n of weighted) bwonly.delete(n);   // "ever weighted" wins
-  const byName = (a, b) => a.localeCompare(b);
-  const wopts = [...weighted].sort(byName)
-    .map(n => `<option value="ex:${esc(n)}">Übung: ${esc(n)}</option>`).join('');
-  if (kind === 'volumen') {
-    // Volume works for bodyweight exercises too (counted as total reps)
-    const bopts = [...bwonly].sort(byName)
-      .map(n => `<option value="ex:${esc(n)}">Übung (nur Wdh): ${esc(n)}</option>`).join('');
-    sel.innerHTML = wopts + bopts;
-  } else {
-    sel.innerHTML = `<option value="bw">Körpergewicht</option>${wopts}`;
-  }
-  if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
 }
 
 // Unit the exercise was originally entered in: majority vote over its entries
@@ -2939,31 +3472,34 @@ function _series_unit(name) {
   return lbs > kg ? 'lbs' : 'kg';
 }
 
-// Build { points: [{date, avg, max}] ascending, unit, single } for the selection.
-// For exercises: max = heaviest set that day, avg = mean over all sets that day,
-// both in the series' original entry unit. Body weight: single series in kg.
-function _analysis_points() {
-  const sel = document.getElementById('ana-series').value;
-  if (sel === 'bw') {
-    const by_date = new Map();
-    // several entries per date possible — keep the latest (list is newest-first)
-    for (const w of [...body_weight].reverse()) by_date.set(w.date, w.weight_kg);
-    const points = [...by_date.entries()]
-      .map(([date, v]) => ({ date, avg: v, max: v }))
-      .sort((a, b) => a.date.localeCompare(b.date));
-    return { points, unit: 'kg', single: true };
-  }
-  const name = sel.slice(3);
+// Body weight: single-series line, latest entry per date, in kg.
+function _bodyweight_points() {
+  const by_date = new Map();
+  for (const w of [...body_weight].reverse()) by_date.set(w.date, w.weight_kg);
+  const points = [...by_date.entries()]
+    .map(([date, v]) => ({ date, avg: v, max: v }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+  return { points, unit: 'kg', single: true };
+}
+
+// Weight progression for an exercise: max = heaviest set that day, avg = mean
+// over all sets that day, in the series' original entry unit (as logged).
+// Bodyweight sets (no added weight) count as 0 — so a partially-weighted
+// exercise (e.g. Situps) shows the BW workouts as zero rather than skipping them.
+function _weight_points(name) {
   const unit = _series_unit(name);
   const by_date = new Map();               // date -> flat list of set weights
   for (const s of workouts) {
     for (const ex of s.exercises) {
-      if (ex.exercise_name !== name || !_has_weight(ex)) continue;
-      const raw  = unit === 'lbs' ? ex.weight_lbs : ex.weight_kg;
-      if (!raw) continue;
-      // Progression chart shows the weight AS LOGGED (per-side stays per-side —
-      // it's the number you actually grab). Only the volume chart doubles it.
-      const vals = JSON.parse(raw).filter(v => v != null);
+      if (ex.exercise_name !== name) continue;
+      const nsets = ex.sets || JSON.parse(ex.reps_per_set).length;
+      let vals;
+      if (_has_weight(ex)) {
+        const raw = unit === 'lbs' ? ex.weight_lbs : ex.weight_kg;
+        vals = JSON.parse(raw).map(v => v ?? 0);   // BW sets within the entry → 0
+      } else {
+        vals = Array(nsets).fill(0);               // whole entry was bodyweight → 0
+      }
       if (!vals.length) continue;
       if (!by_date.has(s.date)) by_date.set(s.date, []);
       by_date.get(s.date).push(...vals);
@@ -2976,6 +3512,23 @@ function _analysis_points() {
     max: Math.max(...vals),
   })).sort((a, b) => a.date.localeCompare(b.date));
   return { points, unit, single: false };
+}
+
+// Total reps of an exercise per workout date — a single-series line, drawn
+// exactly like the weight progression. Works for any exercise (incl. BW).
+function _reps_points(name) {
+  const by_date = new Map();
+  for (const s of workouts) {
+    for (const ex of s.exercises) {
+      if (ex.exercise_name !== name) continue;
+      const reps = JSON.parse(ex.reps_per_set).reduce((a, r) => a + (r || 0), 0);
+      by_date.set(s.date, (by_date.get(s.date) || 0) + reps);
+    }
+  }
+  const points = [...by_date.entries()]
+    .map(([date, v]) => ({ date, avg: v, max: v }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+  return { points, unit: 'Wdh', single: true };
 }
 
 // Clean y-axis ticks: step = 1/2/5 × 10^n covering [min,max] in ~5 steps.
@@ -3003,106 +3556,261 @@ function _iso_week(date_str) {
   return { key: `${t.getFullYear()}-W${String(wk).padStart(2, '0')}`, label: `KW${wk}`, thursday: t };
 }
 
-// Weekly training volume for the selected exercise, per ISO week.
-// Weighted exercises: Σ reps × weight (per-side weights count double).
-// Pure bodyweight exercises: Σ total reps (there is no weight to multiply).
-// Weeks without training show as zero bars (no misleading gaps).
-function _volume_weeks() {
-  const sel = document.getElementById('ana-series').value;
-  if (sel === 'bw') return null;                 // volume needs an exercise
-  const name = sel.slice(3);
-  const is_bw = _is_bodyweight(name);
-  const unit  = is_bw ? 'Wdh' : `${_series_unit(name)}×Wdh`;
-  const mult  = _is_per_hand(name) ? 2 : 1;      // per-side ⇒ full load
+// Volume of one workout_exercise entry.
+// Weighted: Σ reps × weight (per-side weights count double). Bodyweight: Σ reps.
+function _exercise_volume(ex, is_bw, unit, mult) {
+  const reps = JSON.parse(ex.reps_per_set);
+  if (is_bw) return reps.reduce((a, r) => a + (r || 0), 0);
+  if (!_has_weight(ex)) return 0;
+  const raw = unit === 'lbs' ? ex.weight_lbs : ex.weight_kg;
+  if (!raw) return 0;
+  const w = JSON.parse(raw);
+  let v = 0;
+  for (let i = 0; i < reps.length; i++) v += (reps[i] || 0) * ((w[i] ?? 0) * mult);
+  return v;
+}
+
+// Weekly training volume for a (weighted) exercise. The week axis spans the
+// full workout history (first→last workout week); untrained weeks show zero.
+function _volume_weeks(name) {
+  const unit  = `${_series_unit(name)}×Wdh`;
+  const wunit = _series_unit(name);
+  const mult  = _is_per_hand(name) ? 2 : 1;
   const by_week = new Map();
-  let min_th = null, max_th = null;
   for (const s of workouts) {
     for (const ex of s.exercises) {
       if (ex.exercise_name !== name) continue;
-      const reps = JSON.parse(ex.reps_per_set);
-      let vol = 0;
-      if (is_bw) {
-        vol = reps.reduce((a, r) => a + (r || 0), 0);           // total reps
-      } else {
-        if (!_has_weight(ex)) continue;
-        const raw = _series_unit(name) === 'lbs' ? ex.weight_lbs : ex.weight_kg;
-        if (!raw) continue;
-        const w = JSON.parse(raw);
-        for (let i = 0; i < reps.length; i++) vol += (reps[i] || 0) * ((w[i] ?? 0) * mult);
-      }
+      const vol = _exercise_volume(ex, false, wunit, mult);
       if (vol <= 0) continue;
       const wk = _iso_week(s.date);
       by_week.set(wk.key, (by_week.get(wk.key) || 0) + vol);
-      if (!min_th || wk.thursday < min_th) min_th = wk.thursday;
-      if (!max_th || wk.thursday > max_th) max_th = wk.thursday;
     }
   }
-  if (!by_week.size) return { weeks: [], unit };
-  // contiguous week axis from first to last training week
+  const range = _workout_date_range();
+  if (!range) return { bars: [], unit };
   const local_iso = t =>
     `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
-  const weeks = [];
-  for (let t = new Date(min_th); t <= max_th; t.setDate(t.getDate() + 7)) {
-    const wk = _iso_week(local_iso(t));
-    weeks.push({ key: wk.key, label: wk.label, volume: Math.round(by_week.get(wk.key) || 0) });
+  const bars = [];
+  const end = _iso_week(range.max).thursday;
+  for (let t = _iso_week(range.min).thursday; t <= end; t.setDate(t.getDate() + 7)) {
+    const iso = local_iso(t);
+    const wk = _iso_week(iso);
+    const value = Math.round(by_week.get(wk.key) || 0);
+    bars.push({ label: wk.label, value, date: iso, title: `${wk.key}: ${value} ${unit}` });
   }
-  return { weeks, unit };
+  return { bars, unit };
 }
 
-function render_volume_chart() {
-  const el  = document.getElementById('analysis-chart');
-  const res = _volume_weeks();
-  if (res === null) {
-    el.innerHTML = '<p class="empty">Volumen gibt es nur für Übungen — bitte oben eine Übung wählen.</p>';
-    return;
+// Every workout session sorted oldest→newest (one bar per session).
+function _all_sessions_sorted() {
+  return [...workouts].sort((a, b) => a.date.localeCompare(b.date) || (a.id - b.id));
+}
+
+// Volume for a (weighted) exercise, one bar per workout — INCLUDING workouts
+// where the exercise wasn't trained (empty bar).
+function _volume_all_workouts(name) {
+  const unit  = `${_series_unit(name)}×Wdh`;
+  const wunit = _series_unit(name);
+  const mult  = _is_per_hand(name) ? 2 : 1;
+  const short = d => `${d.slice(8, 10)}.${d.slice(5, 7)}.`;
+  const bars = _all_sessions_sorted().map(s => {
+    let v = 0;
+    for (const ex of s.exercises)
+      if (ex.exercise_name === name) v += _exercise_volume(ex, false, wunit, mult);
+    v = Math.round(v);
+    return { label: short(s.date), value: v, date: s.date, title: `${s.date}: ${v} ${unit}` };
+  });
+  return { bars, unit };
+}
+
+// Muscle groups actually assigned to Kraftübungen (the fixed Gruppe field).
+function _all_muscle_groups() {
+  const set = new Set();
+  for (const e of exercise_catalog)
+    if (e.is_strength !== 0 && e.muscle_group) set.add(e.muscle_group);
+  return [...set].sort((a, b) => a.localeCompare(b));
+}
+
+// Distinct Hauptmuskeln across Kraftübungen (muscle plotting uses Hauptmuskel only).
+function _all_muscles() {
+  const set = new Set();
+  for (const e of exercise_catalog) {
+    if (e.is_strength === 0 || !e.muscles) continue;
+    e.muscles.split(',').map(m => m.trim()).filter(Boolean).forEach(m => set.add(m));
   }
-  const { weeks, unit } = res;
-  if (!weeks.length) {
-    el.innerHTML = '<p class="empty">Keine Daten für diese Auswahl vorhanden.</p>';
-    return;
+  return [...set].sort((a, b) => a.localeCompare(b));
+}
+
+// Exercise names (Kraftübungen) matching a selector: 'mg:Group' → by Gruppe,
+// 'mu:Muscle' → the muscle is that exercise's Hauptmuskel (Nebenmuskeln ignored).
+function _exercises_for_selector(sel) {
+  const key = sel.slice(3).trim().toLowerCase();
+  const names = new Set();
+  for (const e of exercise_catalog) {
+    if (e.is_strength === 0) continue;
+    let hit = false;
+    if (sel.startsWith('mg:')) {
+      hit = e.muscle_group && e.muscle_group.toLowerCase() === key;
+    } else {
+      hit = e.muscles && e.muscles.split(',').map(m => m.trim().toLowerCase()).includes(key);
+    }
+    if (hit) names.add(e.name);
   }
+  return names;
+}
+
+// Sets per workout for a group/muscle, broken down (stacked) by exercise.
+// Every workout is a bar; exercises are the stack segments. Returns
+// { bars:[{label,date,total,segments:{exName:sets}}], series:[{key,label,color}], unit }.
+function _stacked_sets(sel) {
+  const names = _exercises_for_selector(sel);
+  const totals = new Map();               // exercise → total sets (for ordering/colours)
+  const bars = _all_sessions_sorted().map(s => {
+    const segments = {};
+    let total = 0;
+    for (const ex of s.exercises) {
+      if (!names.has(ex.exercise_name)) continue;
+      const sets = ex.sets || JSON.parse(ex.reps_per_set).length;
+      segments[ex.exercise_name] = (segments[ex.exercise_name] || 0) + sets;
+      total += sets;
+      totals.set(ex.exercise_name, (totals.get(ex.exercise_name) || 0) + sets);
+    }
+    return { label: `${s.date.slice(8, 10)}.${s.date.slice(5, 7)}.`, date: s.date, total, segments };
+  });
+  // Colour follows the exercise (entity), fixed order by total sets desc.
+  // Beyond the palette size, fold the rest into "Other".
+  const ranked = [...totals.entries()].sort((a, b) => b[1] - a[1]).map(([n]) => n);
+  const series = [];
+  ranked.slice(0, ANA_PALETTE.length).forEach((n, i) => series.push({ key: n, label: n, color: ANA_PALETTE[i] }));
+  if (ranked.length > ANA_PALETTE.length) {
+    const others = new Set(ranked.slice(ANA_PALETTE.length));
+    series.push({ key: '__other__', label: 'Weitere', color: ANA_OTHER });
+    for (const b of bars) {
+      let o = 0;
+      for (const n of others) { if (b.segments[n]) { o += b.segments[n]; delete b.segments[n]; } }
+      if (o) b.segments['__other__'] = o;
+    }
+  }
+  return { bars, series, unit: 'Sätze' };
+}
+
+// Generic vertical bar chart. bars: [{label, value, title}].
+function _render_bars(el, res, caption, empty_msg) {
+  if (res === null) { el.innerHTML = `<p class="empty">${empty_msg}</p>`; return; }
+  const { bars, unit } = res;
+  if (!bars.length) { el.innerHTML = '<p class="empty">Keine Daten für diese Auswahl vorhanden.</p>'; return; }
+
   const { W, H, top, right, bottom, left } = _ANA;
   const iw = W - left - right, ih = H - top - bottom;
-  const ticks = _nice_ticks(0, Math.max(...weeks.map(w => w.volume)));
+  const ticks = _nice_ticks(0, Math.max(...bars.map(b => b.value)));
   const y_max = ticks[ticks.length - 1] || 1;
   const Y = v => top + ih - (v / y_max) * ih;
 
-  const n     = weeks.length;
-  const slot  = iw / n;
-  const bw    = Math.min(slot * 0.62, 64);
-  const grid  = ticks.map(v =>
+  const n    = bars.length;
+  const slot = iw / n;
+  const bw   = Math.min(slot * 0.62, 64);
+  const grid = ticks.map(v =>
     `<line x1="${left}" y1="${Y(v)}" x2="${left + iw}" y2="${Y(v)}" stroke="var(--ana-grid)" stroke-width="1"/>
      <text x="${left - 8}" y="${Y(v) + 4}" text-anchor="end" class="ana-tick">${v}</text>`).join('');
-  const lbl_every = Math.ceil(n / 10);           // ≤10 x labels
-  const bars = weeks.map((w, i) => {
+  const lbl_every = Math.ceil(n / 12);
+  const svg_bars = bars.map((b, i) => {
     const x = left + i * slot + (slot - bw) / 2;
-    const y = Y(w.volume);
+    const y = Y(b.value);
     const lbl = i % lbl_every === 0
-      ? `<text x="${left + i * slot + slot / 2}" y="${top + ih + 22}" text-anchor="middle" class="ana-tick">${w.label}</text>` : '';
-    const val = (n <= 14 && w.volume > 0)
-      ? `<text x="${x + bw / 2}" y="${y - 5}" text-anchor="middle" class="ana-endlabel">${w.volume}</text>` : '';
+      ? `<text x="${left + i * slot + slot / 2}" y="${top + ih + 22}" text-anchor="middle" class="ana-tick">${esc(b.label)}</text>` : '';
+    const val = (n <= 14 && b.value > 0)
+      ? `<text x="${x + bw / 2}" y="${y - 5}" text-anchor="middle" class="ana-endlabel">${b.value}</text>` : '';
     return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${(top + ih - y).toFixed(1)}"
-                  fill="var(--ana-series)" rx="2"><title>${w.key}: ${w.volume} ${esc(unit)}</title></rect>${val}${lbl}`;
+                  fill="var(--ana-series)" rx="2"><title>${esc(b.title)}</title></rect>${val}${lbl}`;
   }).join('');
 
   el.innerHTML = `
-    <p class="chart-caption">Wöchentliches Volumen &mdash; Einheit: <strong>${esc(unit)}</strong></p>
+    <p class="chart-caption">${caption} &mdash; Einheit: <strong>${esc(unit)}</strong></p>
     <div class="chart-wrap">
-      <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Volumen pro Woche"
-           style="width:100%;height:auto;display:block">
+      <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${caption}" style="width:100%;height:auto;display:block">
         <rect x="0" y="0" width="${W}" height="${H}" fill="var(--ana-surface)"/>
         ${grid}
-        <line x1="${left}" y1="${top + ih}" x2="${left + iw}" y2="${top + ih}"
-              stroke="var(--ana-axis)" stroke-width="1"/>
-        ${bars}
+        <line x1="${left}" y1="${top + ih}" x2="${left + iw}" y2="${top + ih}" stroke="var(--ana-axis)" stroke-width="1"/>
+        ${svg_bars}
       </svg>
     </div>
     <details style="margin-top:.75rem">
       <summary style="cursor:pointer;font-size:.9rem;color:var(--pico-muted-color)">Datentabelle</summary>
       <figure><table style="font-size:.85rem">
-        <thead><tr><th>Woche</th><th>Volumen (${esc(unit)})</th></tr></thead>
-        <tbody>${weeks.map(w => `<tr><td>${w.key}</td><td>${w.volume}</td></tr>`).join('')}</tbody>
+        <thead><tr><th>x</th><th>${esc(unit)}</th></tr></thead>
+        <tbody>${bars.map(b => `<tr><td>${esc(b.label)}</td><td>${b.value}</td></tr>`).join('')}</tbody>
       </table></figure>
+    </details>`;
+}
+
+// Validated categorical palette (light mode) from the data-viz reference.
+// Colour follows the entity; assigned in fixed order, never cycled.
+const ANA_PALETTE = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100',
+                     '#e87ba4', '#008300', '#4a3aa7', '#e34948'];
+const ANA_OTHER = '#898781';
+
+// Stacked bar chart: one bar per workout, segments coloured by exercise.
+// res = { bars:[{label,date,total,segments}], series:[{key,label,color}], unit }.
+function render_stacked_bars(el, res, caption) {
+  const { bars, series, unit } = res;
+  if (!bars || !bars.length || !series.length) {
+    el.innerHTML = '<p class="empty">Keine Daten für diese Auswahl vorhanden.</p>';
+    return;
+  }
+  const { W, H, top, right, bottom, left } = _ANA;
+  const iw = W - left - right, ih = H - top - bottom;
+  const ticks = _nice_ticks(0, Math.max(1, ...bars.map(b => b.total)));
+  const y_max = ticks[ticks.length - 1] || 1;
+  const Y = v => top + ih - (v / y_max) * ih;
+
+  const n    = bars.length;
+  const slot = iw / n;
+  const bw   = Math.min(slot * 0.62, 64);
+  const grid = ticks.map(v =>
+    `<line x1="${left}" y1="${Y(v)}" x2="${left + iw}" y2="${Y(v)}" stroke="var(--ana-grid)" stroke-width="1"/>
+     <text x="${left - 8}" y="${Y(v) + 4}" text-anchor="end" class="ana-tick">${v}</text>`).join('');
+  const lbl_every = Math.ceil(n / 12);
+
+  const svg_bars = bars.map((b, i) => {
+    const x = left + i * slot + (slot - bw) / 2;
+    let acc = 0;                                  // running total from the baseline up
+    const segs = series.filter(s => b.segments[s.key]).map(s => {
+      const val = b.segments[s.key];
+      const y0 = Y(acc), y1 = Y(acc + val);
+      acc += val;
+      const h = Math.max(0, y0 - y1 - 2);         // 2px surface gap between segments
+      return `<rect x="${x.toFixed(1)}" y="${y1.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}"
+                    fill="${s.color}" rx="2"><title>${esc(b.date)} · ${esc(s.label)}: ${val} Sätze</title></rect>`;
+    }).join('');
+    const lbl = i % lbl_every === 0
+      ? `<text x="${left + i * slot + slot / 2}" y="${top + ih + 22}" text-anchor="middle" class="ana-tick">${esc(b.label)}</text>` : '';
+    const tot = (n <= 14 && b.total > 0)
+      ? `<text x="${x + bw / 2}" y="${(Y(b.total) - 5).toFixed(1)}" text-anchor="middle" class="ana-endlabel">${b.total}</text>` : '';
+    return segs + lbl + tot;
+  }).join('');
+
+  const legend = `<div class="ana-legend">${series.map(s =>
+    `<span><i style="background:${s.color}"></i>${esc(s.label)}</span>`).join('')}</div>`;
+
+  // Data table: exercises as columns
+  const head = `<tr><th>Datum</th>${series.map(s => `<th>${esc(s.label)}</th>`).join('')}</tr>`;
+  const body = bars.map(b =>
+    `<tr><td>${esc(b.date)}</td>${series.map(s => `<td>${b.segments[s.key] || 0}</td>`).join('')}</tr>`).join('');
+
+  el.innerHTML = `
+    <p class="chart-caption">${caption} &mdash; Einheit: <strong>${esc(unit)}</strong>, gestapelt nach Übung</p>
+    ${legend}
+    <div class="chart-wrap">
+      <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${caption}" style="width:100%;height:auto;display:block">
+        <rect x="0" y="0" width="${W}" height="${H}" fill="var(--ana-surface)"/>
+        ${grid}
+        <line x1="${left}" y1="${top + ih}" x2="${left + iw}" y2="${top + ih}" stroke="var(--ana-axis)" stroke-width="1"/>
+        ${svg_bars}
+      </svg>
+    </div>
+    <details style="margin-top:.75rem">
+      <summary style="cursor:pointer;font-size:.9rem;color:var(--pico-muted-color)">Datentabelle</summary>
+      <figure><table style="font-size:.8rem"><thead>${head}</thead><tbody>${body}</tbody></table></figure>
     </details>`;
 }
 
@@ -3114,11 +3822,15 @@ function _step_path(px, key) {
     : `M${p.x.toFixed(1)},${p[key].toFixed(1)}`).join(' ');
 }
 
-function render_analysis_chart() {
-  const el  = document.getElementById('analysis-chart');
-  const { points: pts, unit, single } = _analysis_points();
-  const sel   = document.getElementById('ana-series');
-  const label = sel.options[sel.selectedIndex]?.textContent || '';
+// Line chart for a points-result {points:[{date,avg,max}], unit, single}.
+// x_range (optional {min,max} dates) fixes the time axis — e.g. the full
+// workout history — instead of auto-fitting to the data points.
+function render_line_chart(el, res, label, x_range) {
+  const { unit, single } = res;
+  // Drop points outside a custom window (a full-range x_range keeps them all).
+  const pts = x_range
+    ? res.points.filter(p => p.date >= x_range.min && p.date <= x_range.max)
+    : res.points;
 
   if (pts.length === 0) {
     el.innerHTML = '<p class="empty">Keine Daten für diese Auswahl vorhanden.</p>';
@@ -3129,7 +3841,8 @@ function render_analysis_chart() {
   const iw = W - left - right, ih = H - top - bottom;
 
   const ts     = pts.map(p => new Date(p.date + 'T00:00:00').getTime());
-  const t_min  = Math.min(...ts), t_max = Math.max(...ts);
+  const t_min  = x_range ? new Date(x_range.min + 'T00:00:00').getTime() : Math.min(...ts);
+  const t_max  = x_range ? new Date(x_range.max + 'T00:00:00').getTime() : Math.max(...ts);
   const t_span = Math.max(t_max - t_min, 1);
   const vals   = pts.flatMap(p => single ? [p.max] : [p.avg, p.max]);
   const ticks  = _nice_ticks(Math.min(...vals), Math.max(...vals));
@@ -3140,7 +3853,7 @@ function render_analysis_chart() {
 
   const px = pts.map((p, i) => ({
     ...p,
-    x:  pts.length === 1 ? left + iw / 2 : X(ts[i]),
+    x:  (pts.length === 1 && !x_range) ? left + iw / 2 : X(ts[i]),
     ym: Y(p.max),
     ya: Y(p.avg),
   }));

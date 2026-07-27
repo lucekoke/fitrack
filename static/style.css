@@ -319,18 +319,54 @@ input.macro-dim {
 }
 .ana-legend {
   display: flex;
-  gap: 1.25rem;
-  margin-bottom: .4rem;
+  flex-wrap: wrap;
+  gap: .35rem 1rem;
+  margin-bottom: .5rem;
   font-size: .85rem;
   color: var(--pico-muted-color);
 }
 .ana-legend span { display: inline-flex; align-items: center; gap: .4rem; }
 .ana-legend i {
   display: inline-block;
-  width: 18px;
-  height: 3px;
+  width: 14px;
+  height: 10px;
   border-radius: 2px;
+  flex-shrink: 0;
 }
+/* ── Ausführungshinweise reveal button ── */
+.hints-btn {
+  margin: 0;
+  padding: 0 .45rem;
+  width: auto;
+  min-width: 0;
+  font-size: .8rem;
+  line-height: 1.5;
+  border-radius: 50%;
+}
+
+/* ── Collapsible exercise hints in the plan overview ──
+   Custom toggle (no <details>, so Pico's accordion chevron can't interfere).
+   The triangle is a ::before pseudo-element — never part of the copied text. */
+.plan-hint-toggle {
+  display: inline-block;
+  cursor: pointer;
+  margin-left: .4rem;
+  color: var(--pico-muted-color);
+  user-select: none;
+  vertical-align: baseline;
+}
+.plan-hint-toggle::before { content: '▸'; font-size: .75rem; }
+li.hint-open > .plan-hint-toggle::before { content: '▾'; }
+.plan-hint-list {
+  display: none;
+  margin: .15rem 0 .3rem 0;
+  padding-left: 1rem;
+  font-size: .8rem;
+  color: var(--pico-muted-color);
+}
+li.hint-open > .plan-hint-list { display: block; }
+.plan-hint-list li { margin: 0; }
+
 /* ── Chart caption (visible axis/unit label) ── */
 .chart-caption {
   margin: 0 0 .4rem;
@@ -458,3 +494,39 @@ tr[draggable="true"] { cursor: default; }
   width: auto;
   font-size: .85rem;
 }
+
+/* Prominent "add from recipe" button in the meal editor (edits.txt #10) */
+.em-recipe-btn {
+  width: 100%;
+  margin: .25rem 0 1rem;
+  padding: .7rem 1rem;
+  font-weight: 600;
+  border: 1px dashed var(--pico-primary);
+  background: var(--pico-primary-background, rgba(0,0,0,.03));
+  color: var(--pico-primary);
+  border-radius: var(--pico-border-radius);
+  cursor: pointer;
+}
+.em-recipe-btn:hover {
+  background: var(--pico-primary-hover-background, var(--pico-primary));
+  color: var(--pico-primary-inverse, #fff);
+}
+
+/* Collapsible meal breakdown in the diary (edits.txt #11) */
+.meal-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  width: auto;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.meal-toggle .caret {
+  display: inline-block;
+  width: 1em;
+  color: var(--pico-primary);
+}
+tr.meal-detail td { font-size: .85rem; }

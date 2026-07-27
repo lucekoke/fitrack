@@ -388,8 +388,12 @@ def delete_food(food_id: int):
 class ExerciseCatalogIn(BaseModel):
     name: str
     comment: str | None = None
-    muscles: str | None = None      # trained muscles, e.g. 'Brust, Trizeps'
-    per_hand: bool = False          # weight is noted per side (dumbbells etc.)
+    muscles: str | None = None            # Hauptmuskeln, e.g. 'Latissimus, Bizeps'
+    per_hand: bool = False                # weight is noted per side (dumbbells etc.)
+    hints: str | None = None              # Ausführungshinweise (execution notes)
+    is_strength: bool = True              # Kraftübung (True) vs Dehnübung (False)
+    muscle_group: str | None = None       # Rücken/Core/Beine/Arme/Brust
+    secondary_muscles: str | None = None  # Nebenmuskeln
 
 @app.get("/api/exercise-catalog")
 def get_exercise_catalog():
@@ -397,11 +401,13 @@ def get_exercise_catalog():
 
 @app.post("/api/exercise-catalog", status_code=201)
 def create_exercise_catalog(body: ExerciseCatalogIn):
-    return {"id": db.upsert_exercise(body.name, body.comment, body.muscles, body.per_hand)}
+    return {"id": db.upsert_exercise(body.name, body.comment, body.muscles, body.per_hand,
+                                     body.hints, body.is_strength, body.muscle_group, body.secondary_muscles)}
 
 @app.put("/api/exercise-catalog/{exercise_id}")
 def update_exercise_catalog(exercise_id: int, body: ExerciseCatalogIn):
-    db.update_exercise_catalog(exercise_id, body.name, body.comment, body.muscles, body.per_hand)
+    db.update_exercise_catalog(exercise_id, body.name, body.comment, body.muscles, body.per_hand,
+                               body.hints, body.is_strength, body.muscle_group, body.secondary_muscles)
     return {"ok": True}
 
 
@@ -521,10 +527,13 @@ def delete_sport(session_id: int):
 class RecipeItemIn(BaseModel):
     food_name: str
     amount_grams: float
+    amount_units: float | None = None   # amount as entered (e.g. 2 for "2 Stk.")
+    unit_name: str | None = None        # its display unit
 
 class RecipeIn(BaseModel):
     name: str
     items: list[RecipeItemIn] = []
+    portions: float | None = None       # servings the recipe makes
 
 @app.get("/api/recipes")
 def get_recipes():
@@ -532,12 +541,12 @@ def get_recipes():
 
 @app.post("/api/recipes", status_code=201)
 def create_recipe(body: RecipeIn):
-    rid = db.upsert_recipe(None, body.name, [i.model_dump() for i in body.items])
+    rid = db.upsert_recipe(None, body.name, [i.model_dump() for i in body.items], body.portions)
     return {"id": rid}
 
 @app.put("/api/recipes/{recipe_id}")
 def update_recipe(recipe_id: int, body: RecipeIn):
-    db.upsert_recipe(recipe_id, body.name, [i.model_dump() for i in body.items])
+    db.upsert_recipe(recipe_id, body.name, [i.model_dump() for i in body.items], body.portions)
     return {"ok": True}
 
 @app.delete("/api/recipes/{recipe_id}")

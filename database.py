@@ -114,6 +114,7 @@ def init_db() -> None:
         _migrate_add_food_v2(conn)
         _migrate_add_settings(conn)
         _migrate_food_category(conn)
+        _migrate_round_nutrition(conn)
     log.debug("Database schema ready at %s", config.DB_PATH)
 
 
@@ -300,6 +301,31 @@ def _migrate_add_recipe_tables(conn: sqlite3.Connection) -> None:
             sort_order  INTEGER NOT NULL DEFAULT 0
         )
     """)
+    rcols = {r[1] for r in conn.execute("PRAGMA table_info(recipes)").fetchall()}
+    if "portions" not in rcols:
+        conn.execute("ALTER TABLE recipes ADD COLUMN portions REAL")   # servings the recipe makes
+    icols = {r[1] for r in conn.execute("PRAGMA table_info(recipe_items)").fetchall()}
+    if "amount_units" not in icols:
+        conn.execute("ALTER TABLE recipe_items ADD COLUMN amount_units REAL")   # amount as entered
+        conn.execute("ALTER TABLE recipe_items ADD COLUMN unit_name TEXT")      # its display unit
+    conn.commit()
+
+
+def _migrate_round_nutrition(conn: sqlite3.Connection) -> None:
+    """One-off: round stored meal-item nutrition to the display precision
+    (kcal → whole numbers, macros → 1 decimal) so inputs with step constraints
+    accept the loaded values."""
+    marker = conn.execute("SELECT value FROM settings WHERE key='nutrition_rounded_v1'").fetchone()
+    if marker:
+        return
+    conn.execute("""
+        UPDATE meal_items SET
+            kcal      = ROUND(kcal),
+            protein_g = ROUND(protein_g, 1),
+            carbs_g   = ROUND(carbs_g, 1),
+            fat_g     = ROUND(fat_g, 1)
+    """)
+    conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('nutrition_rounded_v1', '1')")
     conn.commit()
 
 
@@ -320,6 +346,14 @@ def _migrate_add_exercise_catalog(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE exercise_catalog ADD COLUMN comment TEXT")
     if "muscles" not in existing:
         conn.execute("ALTER TABLE exercise_catalog ADD COLUMN muscles TEXT")   # e.g. 'Brust, Trizeps'
+    if "hints" not in existing:
+        conn.execute("ALTER TABLE exercise_catalog ADD COLUMN hints TEXT")     # Ausführungshinweise
+    if "is_strength" not in existing:
+        # Kraftübung (1) vs Dehnübung (0) — only Kraftübungen get muscles/plots
+        conn.execute("ALTER TABLE exercise_catalog ADD COLUMN is_strength INTEGER NOT NULL DEFAULT 1")
+    if "muscle_group" not in existing:
+        conn.execute("ALTER TABLE exercise_catalog ADD COLUMN muscle_group TEXT")       # Rücken/Core/Beine/Arme/Brust
+        conn.execute("ALTER TABLE exercise_catalog ADD COLUMN secondary_muscles TEXT")  # Nebenmuskeln (muscles = Hauptmuskeln)
     # "pro Seite" is a property of the exercise itself (dumbbells etc.), not of
     # each logged set — the volume chart doubles it for the real load.
     if "per_hand" not in existing:
@@ -510,16 +544,23 @@ def update_food(food_id: int, name: str, kcal: float, protein: float, carbs: flo
             (cap_name, kcal, protein, carbs, fat,
              unit_name, unit_grams, category, food_id),
         )
-        # Propagate to meal_items: rename and recalculate macros from amount_grams
+        # Propagate to meal_items: rename and recalculate macros from amount_grams.
+        # Calories round to whole numbers, macros to one decimal (edits.txt #2).
         conn.execute("""
             UPDATE meal_items
             SET food_name = ?,
-                kcal      = CASE WHEN amount_grams > 0 THEN ROUND(amount_grams * ? / 100.0, 2) ELSE kcal END,
-                protein_g = CASE WHEN amount_grams > 0 THEN ROUND(amount_grams * ? / 100.0, 2) ELSE protein_g END,
-                carbs_g   = CASE WHEN amount_grams > 0 THEN ROUND(amount_grams * ? / 100.0, 2) ELSE carbs_g END,
-                fat_g     = CASE WHEN amount_grams > 0 THEN ROUND(amount_grams * ? / 100.0, 2) ELSE fat_g END
+                kcal      = CASE WHEN amount_grams > 0 THEN ROUND(amount_grams * ? / 100.0, 0) ELSE kcal END,
+                protein_g = CASE WHEN amount_grams > 0 THEN ROUND(amount_grams * ? / 100.0, 1) ELSE protein_g END,
+                carbs_g   = CASE WHEN amount_grams > 0 THEN ROUND(amount_grams * ? / 100.0, 1) ELSE carbs_g END,
+                fat_g     = CASE WHEN amount_grams > 0 THEN ROUND(amount_grams * ? / 100.0, 1) ELSE fat_g END
             WHERE LOWER(food_name) = LOWER(?)
         """, (cap_name, kcal, protein, carbs, fat, old_name))
+        # Recipes recompute macros live from the catalog, so only the ingredient
+        # name needs to follow a rename (edits.txt #5).
+        conn.execute(
+            "UPDATE recipe_items SET food_name = ? WHERE LOWER(food_name) = LOWER(?)",
+            (cap_name, old_name),
+        )
 
 
 def delete_food(food_id: int) -> None:
@@ -584,33 +625,41 @@ def _single_to_weight_array(weight: float | None, sets: int) -> str | None:
 def get_all_exercises() -> list[dict]:
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT id, name, comment, muscles, per_hand FROM exercise_catalog ORDER BY name"
+            "SELECT id, name, comment, muscles, hints, per_hand, "
+            "is_strength, muscle_group, secondary_muscles FROM exercise_catalog ORDER BY name"
         ).fetchall()
     return [dict(r) for r in rows]
 
 
 def upsert_exercise(name: str, comment: str | None = None, muscles: str | None = None,
-                    per_hand: bool | None = None) -> int:
+                    per_hand: bool | None = None, hints: str | None = None,
+                    is_strength: bool | None = None, muscle_group: str | None = None,
+                    secondary_muscles: str | None = None) -> int:
     """Insert an exercise name into the catalog (keeps existing attributes if any).
 
-    per_hand is only written when explicitly given, so auto-registration from a
-    workout entry never resets the flag set in the exercise editor."""
+    per_hand / is_strength are only written when explicitly given, so
+    auto-registration from a workout entry never resets flags set in the editor."""
     name = name.strip()
     now = _now()
     with _connect() as conn:
         conn.execute("""
-            INSERT INTO exercise_catalog (name, comment, muscles, created_at, last_used_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO exercise_catalog (name, comment, muscles, hints, muscle_group, secondary_muscles,
+                                          created_at, last_used_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(name) DO UPDATE SET
-                last_used_at = excluded.last_used_at,
-                comment      = COALESCE(excluded.comment, exercise_catalog.comment),
-                muscles      = COALESCE(excluded.muscles, exercise_catalog.muscles)
-        """, (name, comment, muscles, now, now))
+                last_used_at      = excluded.last_used_at,
+                comment           = COALESCE(excluded.comment, exercise_catalog.comment),
+                muscles           = COALESCE(excluded.muscles, exercise_catalog.muscles),
+                hints             = COALESCE(excluded.hints, exercise_catalog.hints),
+                muscle_group      = COALESCE(excluded.muscle_group, exercise_catalog.muscle_group),
+                secondary_muscles = COALESCE(excluded.secondary_muscles, exercise_catalog.secondary_muscles)
+        """, (name, comment, muscles, hints, muscle_group, secondary_muscles, now, now))
         if per_hand is not None:
-            conn.execute(
-                "UPDATE exercise_catalog SET per_hand=? WHERE name=? COLLATE NOCASE",
-                (int(per_hand), name),
-            )
+            conn.execute("UPDATE exercise_catalog SET per_hand=? WHERE name=? COLLATE NOCASE",
+                         (int(per_hand), name))
+        if is_strength is not None:
+            conn.execute("UPDATE exercise_catalog SET is_strength=? WHERE name=? COLLATE NOCASE",
+                         (int(is_strength), name))
         row = conn.execute(
             "SELECT id FROM exercise_catalog WHERE name=? COLLATE NOCASE", (name,)
         ).fetchone()
@@ -618,7 +667,10 @@ def upsert_exercise(name: str, comment: str | None = None, muscles: str | None =
 
 
 def update_exercise_catalog(exercise_id: int, name: str, comment: str | None,
-                            muscles: str | None = None, per_hand: bool = False) -> None:
+                            muscles: str | None = None, per_hand: bool = False,
+                            hints: str | None = None, is_strength: bool = True,
+                            muscle_group: str | None = None,
+                            secondary_muscles: str | None = None) -> None:
     """Rename a catalog entry, set its attributes, and propagate the rename to workouts."""
     name = name.strip()
     with _connect() as conn:
@@ -627,8 +679,10 @@ def update_exercise_catalog(exercise_id: int, name: str, comment: str | None,
         ).fetchone()
         old_name = old["name"] if old else name
         conn.execute(
-            "UPDATE exercise_catalog SET name=?, comment=?, muscles=?, per_hand=? WHERE id=?",
-            (name, comment, muscles, int(per_hand), exercise_id),
+            "UPDATE exercise_catalog SET name=?, comment=?, muscles=?, per_hand=?, hints=?, "
+            "is_strength=?, muscle_group=?, secondary_muscles=? WHERE id=?",
+            (name, comment, muscles, int(per_hand), hints,
+             int(is_strength), muscle_group, secondary_muscles, exercise_id),
         )
         conn.execute(
             "UPDATE workout_exercises SET exercise_name=? WHERE exercise_name=? COLLATE NOCASE",
@@ -754,11 +808,12 @@ def delete_workout_exercise(exercise_id: int) -> None:
 
 
 def get_all_meal_sessions_full() -> list[dict]:
-    """All meal sessions with items, newest first."""
+    """All meal sessions with items. Within a day, oldest-added first so newly
+    added meals append to the bottom (id ASC tiebreak)."""
     with _connect() as conn:
         sessions = conn.execute(
             "SELECT id, date, meal_name, comment, created_at FROM meal_sessions "
-            "ORDER BY sort_order ASC, date DESC, id DESC"
+            "ORDER BY sort_order ASC, date DESC, id ASC"
         ).fetchall()
         result = []
         for s in sessions:
@@ -776,9 +831,10 @@ def get_all_meal_sessions_full() -> list[dict]:
 
 def insert_meal_session_ui(date: str, meal_name: str | None, comment: str | None = None) -> int:
     with _connect() as conn:
+        nxt = conn.execute("SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM meal_sessions").fetchone()["n"]
         cur = conn.execute(
-            "INSERT INTO meal_sessions (telegram_message_id, date, meal_name, comment) VALUES (?, ?, ?, ?)",
-            (_ui_message_id(), date, meal_name, comment)
+            "INSERT INTO meal_sessions (telegram_message_id, date, meal_name, comment, sort_order) VALUES (?, ?, ?, ?, ?)",
+            (_ui_message_id(), date, meal_name, comment, nxt)
         )
     return cur.lastrowid
 
@@ -982,20 +1038,23 @@ def get_all_recipes() -> list[dict]:
     return recipes
 
 
-def upsert_recipe(recipe_id: int | None, name: str, items: list[dict]) -> int:
+def upsert_recipe(recipe_id: int | None, name: str, items: list[dict],
+                  portions: float | None = None) -> int:
     """Create (recipe_id=None) or replace a recipe with the given items."""
     with _connect() as conn:
         if recipe_id is None:
-            cur = conn.execute("INSERT INTO recipes (name) VALUES (?)", (_cap(name),))
+            cur = conn.execute("INSERT INTO recipes (name, portions) VALUES (?, ?)", (_cap(name), portions))
             rid = cur.lastrowid
         else:
-            conn.execute("UPDATE recipes SET name=? WHERE id=?", (_cap(name), recipe_id))
+            conn.execute("UPDATE recipes SET name=?, portions=? WHERE id=?", (_cap(name), portions, recipe_id))
             rid = recipe_id
         conn.execute("DELETE FROM recipe_items WHERE recipe_id=?", (rid,))
         for i, item in enumerate(items):
             conn.execute(
-                "INSERT INTO recipe_items (recipe_id, food_name, amount_grams, sort_order) VALUES (?,?,?,?)",
-                (rid, _cap(item["food_name"]), item["amount_grams"], i),
+                "INSERT INTO recipe_items (recipe_id, food_name, amount_grams, amount_units, unit_name, sort_order) "
+                "VALUES (?,?,?,?,?,?)",
+                (rid, _cap(item["food_name"]), item["amount_grams"],
+                 item.get("amount_units"), item.get("unit_name"), i),
             )
     return rid
 
