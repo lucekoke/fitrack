@@ -1242,10 +1242,9 @@ function on_food_name_change(input) {
     if (food.unit_name) row.dataset.unitName = food.unit_name;
     else delete row.dataset.unitName;
     if (unit_sel) {
-      // Preselect the food's own unit — for foods like eggs "2 Stk." is the
-      // natural entry; grams remain one click away.
-      const prefer = food.unit_name || 'g';
-      unit_sel.innerHTML = _unit_options_html(food, prefer);
+      // Keep the current unit (defaults to grams) so typing a plain number is
+      // read as grams — the food's own serving unit stays available to pick.
+      unit_sel.innerHTML = _unit_options_html(food, unit_sel.value);
     }
     if (badge) { badge.className = 'food-badge match'; badge.textContent = '✓'; }
     _set_macros_readonly(row, true);
@@ -1287,6 +1286,29 @@ function _recalc_macros(row, amount_grams) {
   row.querySelector('[name="protein_g"]').value = r_nut(parseFloat(row.dataset.per100protein)  * f);
   row.querySelector('[name="carbs_g"]').value   = r_nut(parseFloat(row.dataset.per100carbs)    * f);
   row.querySelector('[name="fat_g"]').value     = r_nut(parseFloat(row.dataset.per100fat)      * f);
+}
+
+// Macros to persist for a meal-item row. If the ingredient is a known catalog
+// food with a convertible amount, they are computed fresh from its per-100g
+// values — this is authoritative and does NOT depend on any change/input event
+// having fired, so typing a food + amount and hitting save always works
+// (edits: single-ingredient meals were saving 0). Otherwise the values typed
+// into the row (manual/one-off items, non-convertible units) are used.
+function _row_macros_for_save(row) {
+  const name = row.querySelector('[name="food_name"]').value.trim();
+  const food = row.dataset.skipDb === 'true' ? null : _food_lookup(name);
+  const g    = _row_grams(row);
+  const read = n => { const v = row.querySelector(`[name="${n}"]`).value; return v ? parseFloat(v) : 0; };
+  if (food && !isNaN(g) && g > 0) {
+    const f = g / 100;
+    return {
+      kcal:      r_kcal(food.kcal_per_100g    * f),
+      protein_g: r_nut(food.protein_per_100g  * f),
+      carbs_g:   r_nut(food.carbs_per_100g    * f),
+      fat_g:     r_nut(food.fat_per_100g      * f),
+    };
+  }
+  return { kcal: read('kcal'), protein_g: read('protein_g'), carbs_g: read('carbs_g'), fat_g: read('fat_g') };
 }
 
 function switch_acts_tab(btn) {
@@ -2594,7 +2616,7 @@ async function open_new_meal_for(date) {
     ${meals.length ? `
     <details style="margin-bottom:.75rem">
       <summary style="cursor:pointer;color:var(--pico-primary);font-size:.9rem;user-select:none">
-        Zutaten aus vorhandener Mahlzeit importieren…
+        Mahlzeit kopieren…
       </summary>
       <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:.6rem">
         <select id="em-import-src" style="margin:0;flex:1;min-width:10rem">
@@ -2711,7 +2733,7 @@ function _item_row_html(item_id, food_name = '', amount = '', kcal = '', protein
   return `<tr data-item-id="${item_id}"${pa}${ug}${un}${skip_attr}>
     <td style="white-space:nowrap">
       <input type="text" name="food_name" value="${esc(food_name)}" placeholder="Lebensmittel"
-             ${skip_db ? 'oninput="update_meal_name_placeholder()"' : 'list="foods-datalist" onchange="on_food_name_change(this)"'}
+             ${skip_db ? 'oninput="update_meal_name_placeholder()"' : 'list="foods-datalist" oninput="on_food_name_change(this)" onchange="on_food_name_change(this)"'}
              style="margin:0;min-width:8rem;display:inline-block;width:auto">
       <span class="food-badge ${badge_cls}">${badge_text}</span>
     </td>
@@ -2798,14 +2820,14 @@ async function save_new_meal() {
     await Promise.all(rows.map(row => {
       const food_name = row.querySelector('[name="food_name"]').value.trim();
       if (!food_name) return null;
-      const v = n => { const r = row.querySelector(`[name="${n}"]`).value; return r ? parseFloat(r) : 0; };
       const g = _row_grams(row);
       const unit = row.querySelector('[name="unit"]').value;
       const raw  = parseFloat(row.querySelector('[name="amount_grams"]').value);
+      const m = _row_macros_for_save(row);
       return api('POST', `/api/meals/${session_id}/items`, {
         food_name,
         amount_grams: isNaN(g) ? null : g,
-        kcal: v('kcal'), protein_g: v('protein_g'), carbs_g: v('carbs_g'), fat_g: v('fat_g'),
+        kcal: m.kcal, protein_g: m.protein_g, carbs_g: m.carbs_g, fat_g: m.fat_g,
         is_estimated: false, comment: null,
         skip_food_db: row.dataset.skipDb === 'true',
         amount_units: unit !== 'g' && !isNaN(raw) ? raw : null,
@@ -2898,23 +2920,20 @@ async function save_meal_edit(session_id, original_ids) {
       const item_id    = row.dataset.itemId;
       const food_name  = row.querySelector('[name="food_name"]').value.trim();
       const amount_raw = row.querySelector('[name="amount_grams"]').value;
-      const kcal_raw   = row.querySelector('[name="kcal"]').value;
-      const prot_raw   = row.querySelector('[name="protein_g"]').value;
-      const carb_raw   = row.querySelector('[name="carbs_g"]').value;
-      const fat_raw    = row.querySelector('[name="fat_g"]').value;
 
       if (!food_name) continue; // skip blank rows
 
       const g    = _row_grams(row);
       const unit = row.querySelector('[name="unit"]').value;
       const raw  = amount_raw ? parseFloat(amount_raw) : NaN;
+      const m    = _row_macros_for_save(row);
       const payload = {
         food_name,
         amount_grams: isNaN(g) ? null : g,
-        kcal:      kcal_raw ? parseFloat(kcal_raw) : 0,
-        protein_g: prot_raw ? parseFloat(prot_raw) : 0,
-        carbs_g:   carb_raw ? parseFloat(carb_raw) : 0,
-        fat_g:     fat_raw  ? parseFloat(fat_raw)  : 0,
+        kcal:      m.kcal,
+        protein_g: m.protein_g,
+        carbs_g:   m.carbs_g,
+        fat_g:     m.fat_g,
         is_estimated: false,
         comment: null,
         skip_food_db: row.dataset.skipDb === 'true',
