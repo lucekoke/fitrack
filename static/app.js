@@ -3293,12 +3293,15 @@ function _init_photo_dropzone() {
 // ─── Analyse (time / weight chart) ─────────────────────────────────────────
 
 async function load_analysis() {
-  // Needs workouts (already loaded at init) + body weight
+  // Needs workouts (already loaded at init) + body weight + meals (Ernährung)
   try {
     if (!body_weight.length) {
       body_weight = await api('GET', '/api/body/weight');
     }
   } catch { /* body weight simply unavailable */ }
+  try {
+    if (!meals.length) meals = await api('GET', '/api/meals');
+  } catch { /* meals simply unavailable */ }
   on_ana_type_change();   // populate series + plot dropdowns for the current Typ, then draw
 }
 
@@ -3308,6 +3311,16 @@ const ANA_KINDS = {
             ['volumen_workout', 'Volumen pro Workout'], ['reps', 'Wiederholungen']],
   muskel:  [['sets_workout', 'Sätze pro Workout']],
   koerper: [['koerper', 'Verlauf']],
+  ernaehrung: [['balken', 'Balken pro Tag']],
+};
+
+// Nutrition metrics for the Ernährung analysis type. `target` names the
+// settings key whose value (if set) is drawn as a red reference line.
+const ANA_NUTRITION = {
+  kcal:    { label: 'Kalorien',      unit: 'kcal', field: 'kcal',      round: r_kcal, target: 'kcal_target' },
+  protein: { label: 'Eiweiß',        unit: 'g',    field: 'protein_g', round: r_nut,  target: 'protein_target' },
+  carbs:   { label: 'Kohlenhydrate', unit: 'g',    field: 'carbs_g',   round: r_nut,  target: null },
+  fat:     { label: 'Fett',          unit: 'g',    field: 'fat_g',     round: r_nut,  target: null },
 };
 
 // Dropdown 1 (Typ) changed → repopulate dropdowns 2 (series) and 3 (plot).
@@ -3345,6 +3358,9 @@ function _fill_analysis_series(type) {
     }
   } else if (type === 'koerper') {
     sel.innerHTML = '<option value="bw">Körpergewicht</option>';
+  } else if (type === 'ernaehrung') {
+    sel.innerHTML = Object.entries(ANA_NUTRITION)
+      .map(([v, c]) => `<option value="${v}">${esc(c.label)}</option>`).join('');
   } else {   // uebung — Kraftübungen only (Dehnübungen aren't plotted)
     const names = new Set();
     for (const s of workouts) for (const ex of s.exercises)
@@ -3371,6 +3387,32 @@ function _workout_date_range() {
   return { min, max };
 }
 
+// Full date span of logged meals — the default x-axis for Ernährung charts.
+function _nutrition_date_range() {
+  if (!meals.length) return null;
+  let min = meals[0].date, max = meals[0].date;
+  for (const m of meals) { if (m.date < min) min = m.date; if (m.date > max) max = m.date; }
+  return { min, max };
+}
+
+// One bar per day summing the chosen nutrition metric across that day's meals.
+function _nutrition_daily(metric) {
+  const cfg = ANA_NUTRITION[metric];
+  if (!cfg || !meals.length) return null;
+  const by = new Map();
+  for (const m of meals) {
+    let sum = 0;
+    for (const it of m.items) sum += (it[cfg.field] || 0);
+    by.set(m.date, (by.get(m.date) || 0) + sum);
+  }
+  const bars = [...by.keys()].sort().map(d => {
+    const v = cfg.round(by.get(d));
+    return { label: `${d.slice(8, 10)}.${d.slice(5, 7)}.`, date: d, value: v,
+             title: `${d}: ${v} ${cfg.unit}` };
+  });
+  return { bars, unit: cfg.unit };
+}
+
 function _bw_hint(name) {
   return `<p class="empty">„${esc(name)}" ist eine reine Körpergewichtsübung — ` +
          `kein Gewicht/Volumen verfügbar. Bitte „Wiederholungen" wählen.</p>`;
@@ -3381,7 +3423,10 @@ function _bw_hint(name) {
 let ana_x_range = null;
 
 function _effective_range() {
-  return ana_x_range || _workout_date_range();
+  if (ana_x_range) return ana_x_range;
+  const type = document.getElementById('ana-type')?.value;
+  if (type === 'ernaehrung') return _nutrition_date_range();
+  return _workout_date_range();
 }
 
 // Drop bars outside the active range (bars carry a full `date`).
@@ -3398,7 +3443,14 @@ function render_analysis() {
   const ser  = document.getElementById('ana-series')?.value || '';
   const range = _effective_range();
 
-  if (type === 'koerper') {
+  if (type === 'ernaehrung') {
+    const metric = ANA_NUTRITION[ser] ? ser : 'kcal';
+    const cfg = ANA_NUTRITION[metric];
+    const t = cfg.target ? parseFloat(settings[cfg.target]) : NaN;
+    const target = (!isNaN(t) && t > 0) ? { value: t, label: 'Ziel' } : null;
+    _render_bars(el, _range_bars(_nutrition_daily(metric)),
+      cfg.label, 'Noch keine Ernährungsdaten vorhanden.', target);
+  } else if (type === 'koerper') {
     render_line_chart(el, _bodyweight_points(), 'Körpergewicht', ana_x_range || undefined);
   } else if (type === 'muskel') {
     if (!ser.startsWith('mg:') && !ser.startsWith('mu:')) {
@@ -3718,16 +3770,23 @@ function _stacked_sets(sel) {
 }
 
 // Generic vertical bar chart. bars: [{label, value, title}].
-function _render_bars(el, res, caption, empty_msg) {
+// `target` (optional) = {value, label} → drawn as a red reference line.
+function _render_bars(el, res, caption, empty_msg, target = null) {
   if (res === null) { el.innerHTML = `<p class="empty">${empty_msg}</p>`; return; }
   const { bars, unit } = res;
   if (!bars.length) { el.innerHTML = '<p class="empty">Keine Daten für diese Auswahl vorhanden.</p>'; return; }
 
   const { W, H, top, right, bottom, left } = _ANA;
   const iw = W - left - right, ih = H - top - bottom;
-  const ticks = _nice_ticks(0, Math.max(...bars.map(b => b.value)));
+  const max_v = Math.max(0, ...bars.map(b => b.value), target ? target.value : 0);
+  const ticks = _nice_ticks(0, max_v);
   const y_max = ticks[ticks.length - 1] || 1;
   const Y = v => top + ih - (v / y_max) * ih;
+  const target_svg = target ? `
+    <line x1="${left}" y1="${Y(target.value).toFixed(1)}" x2="${left + iw}" y2="${Y(target.value).toFixed(1)}"
+          stroke="#e34948" stroke-width="2" stroke-dasharray="6 4"/>
+    <text x="${left + iw}" y="${(Y(target.value) - 6).toFixed(1)}" text-anchor="end"
+          class="ana-endlabel" fill="#e34948">${esc(target.label)}: ${target.value}</text>` : '';
 
   const n    = bars.length;
   const slot = iw / n;
@@ -3755,6 +3814,7 @@ function _render_bars(el, res, caption, empty_msg) {
         ${grid}
         <line x1="${left}" y1="${top + ih}" x2="${left + iw}" y2="${top + ih}" stroke="var(--ana-axis)" stroke-width="1"/>
         ${svg_bars}
+        ${target_svg}
       </svg>
     </div>
     <details style="margin-top:.75rem">
