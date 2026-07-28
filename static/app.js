@@ -1232,6 +1232,10 @@ function on_food_name_change(input) {
   const row   = input.closest('tr');
   const badge = row.querySelector('.food-badge');
   const unit_sel = row.querySelector('[name="unit"]');
+  const add_lbl  = row.querySelector('.add-to-db-lbl');
+  // The "In Datenbank speichern" checkbox only makes sense for a typed name
+  // that isn't already in the catalog.
+  if (add_lbl) add_lbl.style.display = (!food && input.value.trim()) ? 'block' : 'none';
   if (food) {
     row.dataset.per100kcal    = food.kcal_per_100g;
     row.dataset.per100protein = food.protein_per_100g;
@@ -1312,6 +1316,17 @@ function _row_macros_for_save(row) {
     };
   }
   return { kcal: read('kcal'), protein_g: read('protein_g'), carbs_g: read('carbs_g'), fat_g: read('fat_g') };
+}
+
+// Whether to KEEP a meal ingredient out of the food catalog. Einmalig rows are
+// always kept out; a name already in the catalog is unaffected; a new (unknown)
+// name is kept out unless the user ticked "In Datenbank speichern".
+function _row_skip_db(row) {
+  if (row.dataset.skipDb === 'true') return true;
+  const name = row.querySelector('[name="food_name"]').value.trim();
+  if (_food_lookup(name)) return false;               // already known → nothing to add
+  const chk = row.querySelector('[name="add_to_db"]');
+  return !(chk && chk.checked);                        // new food: default = don't add
 }
 
 function switch_acts_tab(btn) {
@@ -2228,18 +2243,22 @@ async function open_add_recipe_to_meal(preselect_id = null) {
   }
   const opts = recipes.map(r => {
     const total_g = r.items.reduce((sum, i) => sum + (i.amount_grams || 0), 0);
-    return `<option value="${r.id}" data-total="${total_g}" data-portions="${r.portions || ''}" ${r.id === preselect_id ? 'selected' : ''}>${esc(r.name)} (${Math.round(total_g)}&thinsp;g gesamt)</option>`;
+    const has_p   = r.portions > 0;
+    const label   = has_p
+      ? `${esc(r.name)} (${+r.portions} Portion${+r.portions === 1 ? '' : 'en'})`
+      : `${esc(r.name)} (${Math.round(total_g)} g gesamt)`;
+    return `<option value="${r.id}" data-total="${total_g}" data-portions="${r.portions || ''}" ${r.id === preselect_id ? 'selected' : ''}>${label}</option>`;
   }).join('');
   open_modal2('Rezept hinzufügen', `<div>
-    <label>Rezept<select id="ra-select" onchange="update_recipe_add_hint()">${opts}</select></label>
+    <label>Rezept<select id="ra-select" onchange="on_recipe_select_change()">${opts}</select></label>
     <div class="grid" style="margin-bottom:.25rem">
       <label style="margin:0">Menge
-        <input type="number" id="ra-amount" step="any" min="0" placeholder="z.B. 300" autofocus>
+        <input type="number" id="ra-amount" step="any" min="0" placeholder="z.B. 1" autofocus>
       </label>
       <label style="margin:0">Einheit
         <select id="ra-mode" onchange="update_recipe_add_hint()">
-          <option value="g">Gramm</option>
           <option value="portion">Portionen</option>
+          <option value="g">Gramm</option>
         </select>
       </label>
     </div>
@@ -2250,6 +2269,16 @@ async function open_add_recipe_to_meal(preselect_id = null) {
       <button type="button" style="width:auto" onclick="apply_recipe_to_meal()">Original hinzufügen</button>
     </div>
   </div>`);
+  on_recipe_select_change();
+}
+
+// Recipe picked → default the unit to Portionen when the recipe defines a
+// portion count, otherwise Gramm.
+function on_recipe_select_change() {
+  const sel  = document.getElementById('ra-select');
+  const mode = document.getElementById('ra-mode');
+  const portions = parseFloat(sel.options[sel.selectedIndex]?.dataset.portions) || 0;
+  if (mode) mode.value = portions > 0 ? 'portion' : 'g';
   update_recipe_add_hint();
 }
 
@@ -2266,58 +2295,110 @@ function _recipe_scale(r, mode, amount) {
   return total > 0 ? amount / total : null;
 }
 
-// Adapt a recipe just for this day: edit the (scaled) ingredient amounts before
-// adding. Changes affect only the meal being logged — the stored recipe is
-// never modified.
+// Adapt a recipe just for this day: opens the full ingredient editor (same as
+// creating a recipe) prefilled with the recipe — add/remove ingredients, change
+// amounts and the portion count. NOTHING here is written back to the stored
+// recipe; the edited version is only scaled into the meal being logged. The
+// amount actually taken (grams or portions) is entered at the bottom.
 function open_recipe_adapt() {
-  const sel       = document.getElementById('ra-select');
-  const recipe_id = parseInt(sel.value);
-  const mode      = document.getElementById('ra-mode')?.value || 'g';
-  const amount    = parseFloat(document.getElementById('ra-amount').value);
-  const r = recipes.find(x => x.id === recipe_id);
+  const sel = document.getElementById('ra-select');
+  const r   = recipes.find(x => x.id === parseInt(sel.value));
   if (!r) return;
-  const scale = _recipe_scale(r, mode, amount);
-  if (scale === null) {
-    alert(mode === 'portion'
-      ? 'Bitte Portionen eingeben (Rezept muss Portionen hinterlegt haben).'
-      : 'Bitte Menge eingeben.');
-    return;
-  }
-  const rows = r.items.map(i => {
-    const amt = Math.round(i.amount_grams * scale * 10) / 10;
-    return `<tr>
-      <td>${esc(i.food_name)}<input type="hidden" name="ra-food" value="${esc(i.food_name)}"></td>
-      <td style="white-space:nowrap">
-        <input type="number" name="ra-amt" value="${amt}" step="0.1" min="0" style="margin:0;width:5.5rem"> g
-      </td>
-    </tr>`;
-  }).join('');
+  const rows = r.items.map(i => _recipe_item_row_html(
+    i.food_name,
+    (i.unit_name && i.amount_units != null) ? i.amount_units : i.amount_grams,
+    (i.unit_name && i.amount_units != null) ? i.unit_name : 'g')).join('');
+  const portions = r.portions != null ? +r.portions : '';
   open_modal2('Rezept anpassen: ' + r.name, `<div data-recipe-name="${esc(r.name)}">
     <p style="font-size:.85rem;color:var(--pico-muted-color)">
       Änderungen gelten nur für diesen Tag — das gespeicherte Rezept bleibt unverändert.
     </p>
-    <table style="font-size:.85rem;margin:0">
-      <thead><tr><th>Zutat</th><th>Menge</th></tr></thead>
-      <tbody id="ra-adapt">${rows}</tbody>
-    </table>
+    <label>Portionen (optional)<input type="number" id="ra-portions" step="any" min="0"
+           value="${portions}" placeholder="z.B. 4" oninput="update_adapt_hint()"></label>
+    <strong style="font-size:.9rem">Zutaten</strong>
+    <div style="overflow-x:auto;margin-top:.4rem">
+      <table style="font-size:.85rem;margin:0">
+        <thead><tr><th>Lebensmittel</th><th>Menge</th><th></th></tr></thead>
+        <tbody id="ra-adapt">${rows}</tbody>
+      </table>
+    </div>
+    <button type="button" class="secondary outline"
+            style="width:auto;font-size:.85rem;margin:.6rem 0 1rem"
+            onclick="add_adapt_item_row()">+ Zutat hinzufügen</button>
+    <hr style="margin:.25rem 0 .75rem">
+    <strong style="font-size:.9rem">Wie viel hast du genommen?</strong>
+    <div class="grid" style="margin:.4rem 0 .25rem">
+      <label style="margin:0">Menge
+        <input type="number" id="ra-adapt-amount" step="any" min="0" placeholder="z.B. 1"
+               oninput="update_adapt_hint()">
+      </label>
+      <label style="margin:0">Einheit
+        <select id="ra-adapt-mode" onchange="update_adapt_hint()">
+          <option value="portion">Portionen</option>
+          <option value="g">Gramm</option>
+        </select>
+      </label>
+    </div>
+    <small id="ra-adapt-hint" style="color:var(--pico-muted-color)"></small>
     <div class="form-footer" style="margin-top:.75rem">
       <button type="button" class="secondary outline" onclick="close_modal2()">Abbrechen</button>
       <button type="button" onclick="apply_recipe_adapted()">Übernehmen</button>
     </div>
   </div>`);
+  document.getElementById('ra-adapt-mode').value = portions !== '' ? 'portion' : 'g';
+  update_adapt_hint();
+}
+
+function add_adapt_item_row() {
+  document.getElementById('ra-adapt').insertAdjacentHTML('beforeend', _recipe_item_row_html());
+  document.querySelector('#ra-adapt tr:last-child input').focus();
+}
+
+// Build the temporary (edited) recipe from the adapt dialog's current rows.
+function _adapt_temp_recipe() {
+  const items = [...document.querySelectorAll('#ra-adapt tr')].map(row => {
+    const food  = row.querySelector('[name="ri-food"]').value.trim();
+    const grams = _recipe_row_grams(row);
+    return { food_name: food, amount_grams: grams };
+  }).filter(i => i.food_name && !isNaN(i.amount_grams) && i.amount_grams > 0);
+  const p = parseFloat(document.getElementById('ra-portions').value);
+  return { items, portions: isNaN(p) || p <= 0 ? null : p };
+}
+
+function update_adapt_hint() {
+  const hint = document.getElementById('ra-adapt-hint');
+  if (!hint) return;
+  const tmp   = _adapt_temp_recipe();
+  const total = tmp.items.reduce((s, i) => s + i.amount_grams, 0);
+  const mode  = document.getElementById('ra-adapt-mode').value;
+  const amt   = parseFloat(document.getElementById('ra-adapt-amount').value);
+  const parts = [`Rezept gesamt: ${Math.round(total)} g`];
+  if (tmp.portions) parts.push(`${Math.round(tmp.portions * 10) / 10} Portion(en) · 1 Portion ≈ ${Math.round(total / tmp.portions)} g`);
+  const scale = _recipe_scale(tmp, mode, amt);
+  if (scale !== null) parts.push(`entnommen ≈ ${Math.round(total * scale)} g`);
+  else if (mode === 'portion' && !tmp.portions) parts.push('— bitte Portionen oben eintragen');
+  hint.textContent = parts.join(' · ');
 }
 
 function apply_recipe_adapted() {
-  const rows = [...document.querySelectorAll('#ra-adapt tr')];
   const rname = document.querySelector('#modal2-body [data-recipe-name]')?.dataset.recipeName;
+  const tmp   = _adapt_temp_recipe();
+  if (!tmp.items.length) { alert('Bitte mindestens eine Zutat angeben.'); return; }
+  const mode  = document.getElementById('ra-adapt-mode').value;
+  const amt   = parseFloat(document.getElementById('ra-adapt-amount').value);
+  const scale = _recipe_scale(tmp, mode, amt);
+  if (scale === null) {
+    alert(mode === 'portion'
+      ? 'Bitte Portionen eingeben (oben eine Portionenzahl hinterlegen).'
+      : 'Bitte Menge eingeben.');
+    return;
+  }
   close_modal2();
   if (rname) _tag_recipe_name(rname);
   const round1 = v => Math.round(v * 10) / 10;
-  for (const row of rows) {
-    const food   = row.querySelector('[name="ra-food"]').value;
-    const amount = parseFloat(row.querySelector('[name="ra-amt"]').value);
-    if (!food || isNaN(amount) || amount <= 0) continue;
-    const f = _food_lookup(food);
+  for (const item of tmp.items) {
+    const amount = round1(item.amount_grams * scale);
+    const f = _food_lookup(item.food_name);
     let kcal = 0, protein = 0, carbs = 0, fat = 0;
     if (f) {
       const fac = amount / 100;
@@ -2326,7 +2407,7 @@ function apply_recipe_adapted() {
       carbs   = round1(f.carbs_per_100g   * fac);
       fat     = round1(f.fat_per_100g     * fac);
     }
-    add_em_item_row(food, amount, kcal, protein, carbs, fat);
+    add_em_item_row(item.food_name, amount, kcal, protein, carbs, fat);
   }
   update_meal_name_placeholder();
 }
@@ -2687,11 +2768,13 @@ function update_meal_name_placeholder() {
   inp.placeholder = derived || 'wird automatisch aus den Zutaten gebildet';
 }
 
-// Unit <select> options for a row: the full serving-unit list (g, Stk., …),
-// plus the food's own custom unit if it isn't already one of them.
+// Unit <select> options for an ingredient row: only the units that apply to
+// THIS food — grams plus the food's own serving unit (if it has one). A unit
+// already stored on the row (e.g. a legacy value) is kept selectable.
 function _unit_options_html(food, selected = 'g') {
-  const units = [...FOOD_UNITS];
-  if (food && food.unit_name && !units.includes(food.unit_name)) units.push(food.unit_name);
+  const units = ['g'];
+  if (food && food.unit_name && food.unit_name !== 'g') units.push(food.unit_name);
+  if (selected && !units.includes(selected)) units.push(selected);
   return units.map(u => `<option value="${esc(u)}" ${u === selected ? 'selected' : ''}>${esc(u)}</option>`).join('');
 }
 
@@ -2732,6 +2815,7 @@ function _item_row_html(item_id, food_name = '', amount = '', kcal = '', protein
   const ug   = (food && food.unit_grams) ? ` data-unit-grams="${food.unit_grams}"` : '';
   const un   = (food && food.unit_name)  ? ` data-unit-name="${esc(food.unit_name)}"` : '';
   const skip_attr  = skip_db ? ' data-skip-db="true"' : '';
+  const is_new     = !skip_db && !!food_name && !food;   // typed name not in the catalog
   const badge_cls  = skip_db ? 'skip' : (per100 ? 'match' : (food_name ? 'new' : ''));
   const badge_text = skip_db ? 'einmalig' : (per100 ? '✓' : (food_name ? 'neu' : ''));
   return `<tr data-item-id="${item_id}"${pa}${ug}${un}${skip_attr}>
@@ -2740,6 +2824,8 @@ function _item_row_html(item_id, food_name = '', amount = '', kcal = '', protein
              ${skip_db ? 'oninput="update_meal_name_placeholder()"' : 'list="foods-datalist" oninput="on_food_name_change(this)" onchange="on_food_name_change(this)"'}
              style="margin:0;min-width:8rem;display:inline-block;width:auto">
       <span class="food-badge ${badge_cls}">${badge_text}</span>
+      ${skip_db ? '' : `<label class="add-to-db-lbl" style="display:${is_new ? 'block' : 'none'};font-size:.7rem;color:var(--pico-muted-color);white-space:nowrap;margin:.15rem 0 0">
+        <input type="checkbox" name="add_to_db" style="width:auto;margin:0 .3rem 0 0;vertical-align:middle">In Datenbank speichern</label>`}
     </td>
     <td style="white-space:nowrap">
       <input type="number" name="amount_grams" value="${amount}" step="any" min="0" placeholder="Menge"
@@ -2813,6 +2899,11 @@ async function save_new_meal() {
   const name = document.getElementById('em-name').value.trim() || _derive_meal_name();
   if (!date) { alert('Datum fehlt.'); return; }
 
+  // Don't create an empty (0-kcal) meal — a day exists only through its meals.
+  const rows = Array.from(document.querySelectorAll('#em-items tr'))
+    .filter(row => row.querySelector('[name="food_name"]').value.trim());
+  if (!rows.length) { alert('Bitte mindestens eine Zutat hinzufügen.'); return; }
+
   const btn = document.getElementById('em-save-btn');
   btn.setAttribute('aria-busy', 'true');
   btn.disabled = true;
@@ -2820,7 +2911,6 @@ async function save_new_meal() {
     const { id: session_id } = await api('POST', '/api/meals', {
       date, meal_name: name || null, comment: null,
     });
-    const rows = Array.from(document.querySelectorAll('#em-items tr'));
     await Promise.all(rows.map(row => {
       const food_name = row.querySelector('[name="food_name"]').value.trim();
       if (!food_name) return null;
@@ -2833,7 +2923,7 @@ async function save_new_meal() {
         amount_grams: isNaN(g) ? null : g,
         kcal: m.kcal, protein_g: m.protein_g, carbs_g: m.carbs_g, fat_g: m.fat_g,
         is_estimated: false, comment: null,
-        skip_food_db: row.dataset.skipDb === 'true',
+        skip_food_db: _row_skip_db(row),
         amount_units: unit !== 'g' && !isNaN(raw) ? raw : null,
         unit_name:    unit !== 'g' && !isNaN(raw) ? unit : null,
       });
@@ -2940,7 +3030,7 @@ async function save_meal_edit(session_id, original_ids) {
         fat_g:     m.fat_g,
         is_estimated: false,
         comment: null,
-        skip_food_db: row.dataset.skipDb === 'true',
+        skip_food_db: _row_skip_db(row),
         amount_units: unit !== 'g' && !isNaN(raw) ? raw : null,
         unit_name:    unit !== 'g' && !isNaN(raw) ? unit : null,
       };
