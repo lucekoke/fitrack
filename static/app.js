@@ -2065,35 +2065,55 @@ function render_recipes() {
       }
       total_g += item.amount_grams || 0;
     }
-    // Ingredients visible directly on the overview page (expandable per recipe)
-    const ing_list = r.items.map(i => {
-      const amt = (i.unit_name && i.amount_units != null)
-        ? `${i.amount_units} ${esc(i.unit_name)}` : `${i.amount_grams} g`;
-      return `<li>${amt} ${esc(i.food_name)}</li>`;
-    }).join('');
     const portions = r.portions ? ` · ${(+r.portions)} Portion${r.portions === 1 ? '' : 'en'}` : '';
+    // Expanding a recipe reveals its ingredients (with their own nutrition) as
+    // rows in the same table — exactly like collapsing a meal in the diary.
+    const has_ing = r.items.length > 0;
+    const name_cell = has_ing
+      ? `<button class="meal-toggle" aria-expanded="false" onclick="toggle_recipe_details(${r.id}, this)"><span class="caret">▸</span> <strong>${esc(r.name)}</strong> <small style="color:var(--pico-muted-color)">(${r.items.length})</small></button>`
+      : `<strong>${esc(r.name)}</strong>`;
+    const detail_rows = r.items.map(i => {
+      const amt  = (i.unit_name && i.amount_units != null)
+        ? `${i.amount_units} ${esc(i.unit_name)}` : `${i.amount_grams} g`;
+      const food = _food_lookup(i.food_name);
+      const f    = (i.amount_grams || 0) / 100;
+      const ik = food ? r_kcal(food.kcal_per_100g * f)    : 0;
+      const ip = food ? r_nut(food.protein_per_100g * f)  : 0;
+      const ic = food ? r_nut(food.carbs_per_100g * f)    : 0;
+      const iff= food ? r_nut(food.fat_per_100g * f)      : 0;
+      return `<tr class="recipe-detail" data-parent="${r.id}" hidden>
+        <td style="padding-left:1.6rem;color:var(--pico-muted-color)">${esc(i.food_name)}</td>
+        <td style="color:var(--pico-muted-color)">${amt}</td>
+        <td>${ik}</td><td>${ip}g</td><td>${ic}g</td><td>${iff}g</td>
+        <td></td>
+      </tr>`;
+    }).join('');
     return `<tr>
-      <td>
-        <details class="recipe-details">
-          <summary><strong>${esc(r.name)}</strong></summary>
-          <ul class="recipe-ingredients">${ing_list || '<li>keine Zutaten</li>'}</ul>
-        </details>
-      </td>
+      <td>${name_cell}</td>
       <td>${r.items.length} Zutat${r.items.length !== 1 ? 'en' : ''} (${Math.round(total_g)}&thinsp;g${portions})</td>
-      <td>${r_kcal(tk)}&thinsp;kcal</td>
-      <td>${r_nut(tp)}g P</td>
-      <td>${r_nut(tc)}g KH</td>
-      <td>${r_nut(tf)}g F</td>
+      <td>${r_kcal(tk)}</td>
+      <td>${r_nut(tp)}g</td>
+      <td>${r_nut(tc)}g</td>
+      <td>${r_nut(tf)}g</td>
       <td class="row-actions">
         <button class="outline secondary" onclick="open_edit_recipe(${r.id})">&#9998;</button>
         <button class="outline contrast"  onclick="del_recipe(${r.id})">&#10005;</button>
       </td>
-    </tr>`;
+    </tr>${detail_rows}`;
   }).join('');
   el.innerHTML = add_btn + `<figure><table>
     <thead><tr><th>Name</th><th>Zutaten</th><th>kcal</th><th>Eiweiß</th><th>KH</th><th>Fett</th><th></th></tr></thead>
     <tbody>${rows}</tbody>
   </table></figure>`;
+}
+
+function toggle_recipe_details(recipe_id, btn) {
+  const open = btn.getAttribute('aria-expanded') === 'true';
+  btn.setAttribute('aria-expanded', String(!open));
+  const caret = btn.querySelector('.caret');
+  if (caret) caret.textContent = open ? '▸' : '▾';
+  document.querySelectorAll(`tr.recipe-detail[data-parent="${recipe_id}"]`)
+    .forEach(tr => { tr.hidden = open; });
 }
 
 // Recipe ingredient row: name + amount + unit dropdown (g plus the food's own
@@ -3647,35 +3667,40 @@ function _bodyweight_points() {
   return { points, unit: 'kg', single: true };
 }
 
-// Weight progression for an exercise: max = heaviest set that day, avg = mean
-// over all sets that day, in the series' original entry unit (as logged).
+// Weight progression for an exercise: max = heaviest set that day, avg =
+// reps-weighted mean over all sets that day (a set carries more weight in the
+// average the more reps it had), in the series' original entry unit (as logged).
 // Bodyweight sets (no added weight) count as 0 — so a partially-weighted
 // exercise (e.g. Situps) shows the BW workouts as zero rather than skipping them.
 function _weight_points(name) {
   const unit = _series_unit(name);
-  const by_date = new Map();               // date -> flat list of set weights
+  const by_date = new Map();               // date -> [{ w, r }] per set
   for (const s of workouts) {
     for (const ex of s.exercises) {
       if (ex.exercise_name !== name) continue;
-      const nsets = ex.sets || JSON.parse(ex.reps_per_set).length;
-      let vals;
+      const reps  = JSON.parse(ex.reps_per_set);
+      const nsets = ex.sets || reps.length;
+      let weights;
       if (_has_weight(ex)) {
         const raw = unit === 'lbs' ? ex.weight_lbs : ex.weight_kg;
-        vals = JSON.parse(raw).map(v => v ?? 0);   // BW sets within the entry → 0
+        weights = JSON.parse(raw).map(v => v ?? 0);   // BW sets within the entry → 0
       } else {
-        vals = Array(nsets).fill(0);               // whole entry was bodyweight → 0
+        weights = Array(nsets).fill(0);               // whole entry was bodyweight → 0
       }
-      if (!vals.length) continue;
+      if (!weights.length) continue;
       if (!by_date.has(s.date)) by_date.set(s.date, []);
-      by_date.get(s.date).push(...vals);
+      const arr = by_date.get(s.date);
+      weights.forEach((w, i) => arr.push({ w, r: reps[i] ?? 1 }));
     }
   }
   const round1 = v => Math.round(v * 10) / 10;
-  const points = [...by_date.entries()].map(([date, vals]) => ({
-    date,
-    avg: round1(vals.reduce((a, b) => a + b, 0) / vals.length),
-    max: Math.max(...vals),
-  })).sort((a, b) => a.date.localeCompare(b.date));
+  const points = [...by_date.entries()].map(([date, sets]) => {
+    const rep_sum = sets.reduce((a, s) => a + (s.r || 0), 0);
+    const avg = rep_sum > 0
+      ? sets.reduce((a, s) => a + s.w * (s.r || 0), 0) / rep_sum   // reps-weighted
+      : sets.reduce((a, s) => a + s.w, 0) / sets.length;          // no reps → plain mean
+    return { date, avg: round1(avg), max: Math.max(...sets.map(s => s.w)) };
+  }).sort((a, b) => a.date.localeCompare(b.date));
   return { points, unit, single: false };
 }
 

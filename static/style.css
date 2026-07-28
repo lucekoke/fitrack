@@ -529,4 +529,4 @@ tr[draggable="true"] { cursor: default; }
   width: 1em;
   color: var(--pico-primary);
 }
-tr.meal-detail td { font-size: .85rem; }
+tr.meal-detail td, tr.recipe-detail td { font-size: .85rem; }
