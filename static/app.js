@@ -2626,33 +2626,37 @@ function _tag_recipe_name(name) {
 
 // Units offered for "Nährwerte je …". Grams are the canonical storage unit;
 // everything else is a serving unit whose weight MAY be given (optional).
-const FOOD_UNITS = ['g', 'Stk.', 'Scheibe', 'Handvoll', 'EL', 'TL', 'Portion', 'Dose/Glas'];
+const FOOD_UNITS = ['g', 'ml', 'Stk.', 'Scheibe', 'Handvoll', 'EL', 'TL', 'Portion', 'Dose/Glas'];
+
+// Grams and millilitres are the canonical measures (stored 1:1); every other
+// unit is a named serving unit whose gram weight may be given.
+function _is_canonical_unit(u) { return u === 'g' || u === 'ml'; }
 
 function _food_modal_body(f) {
   const name    = f ? esc(f.name) : '';
-  const has_unit = !!(f && f.unit_name);
-  // Editing a unit-based food: show the macros per 1 unit (that's how they
-  // were entered), derived from the stored per-100g values.
-  const to_unit = v => has_unit ? Math.round(v * ((f.unit_grams || 100) / 100) * 100) / 100 : v;
+  // A "named" unit (Stk., Dose/Glas, …) stores macros per 1 unit; g and ml are
+  // canonical (per 100), so they use the plain per-100 entry like grams.
+  const named   = !!(f && f.unit_name && !_is_canonical_unit(f.unit_name));
+  const to_unit = v => named ? Math.round(v * ((f.unit_grams || 100) / 100) * 100) / 100 : v;
   const kcal    = f ? to_unit(f.kcal_per_100g)    : '';
   const protein = f ? to_unit(f.protein_per_100g) : '';
   const carbs   = f ? to_unit(f.carbs_per_100g)   : '';
   const fat     = f ? to_unit(f.fat_per_100g)     : '';
-  const cur_unit = has_unit ? f.unit_name : 'g';
+  const cur_unit = (f && f.unit_name) ? f.unit_name : 'g';
   const unit_opts = FOOD_UNITS.map(u =>
     `<option value="${u}" ${u === cur_unit ? 'selected' : ''}>${u}</option>`).join('')
     + (FOOD_UNITS.includes(cur_unit) ? '' : `<option value="${esc(cur_unit)}" selected>${esc(cur_unit)}</option>`);
   return `<form>
     <label>Name<input type="text" name="name" value="${name}" required></label>
     <label style="font-weight:600">Nährwerte je
-      <input type="number" name="per_g" value="${has_unit ? 1 : 100}" min="0.1" step="any"
+      <input type="number" name="per_g" value="${named ? 1 : 100}" min="0.1" step="any"
              style="display:inline-block;width:5rem;margin:0 .4rem"
              oninput="update_per_g_label()">
       <select name="per_unit" onchange="on_per_unit_change(this)"
               style="display:inline-block;width:auto;margin:0 .4rem;padding:.2rem 1.6rem .2rem .5rem">${unit_opts}</select>
       <span id="per-g-hint" style="font-weight:normal;color:var(--pico-muted-color);font-size:.85rem"></span>
     </label>
-    <label id="unit-weight-field" ${has_unit ? '' : 'hidden'}>Gewicht je Einheit (g, optional)
+    <label id="unit-weight-field" ${named ? '' : 'hidden'}>Gewicht je Einheit (g, optional)
       <input type="number" name="unit_weight" step="0.1" min="0"
              value="${f && f.unit_grams != null ? f.unit_grams : ''}"
              placeholder="leer = unbekannt, Angaben bleiben je Einheit">
@@ -2682,7 +2686,13 @@ function _food_modal_body(f) {
 
 function on_per_unit_change(sel) {
   const form = sel.closest('form');
-  form.querySelector('#unit-weight-field').hidden = (sel.value === 'g');
+  // g and ml are canonical (1:1) → no per-unit gram weight; per 100 like grams.
+  const canonical = _is_canonical_unit(sel.value);
+  form.querySelector('#unit-weight-field').hidden = canonical;
+  const per_g = form.querySelector('[name="per_g"]');
+  if (per_g && (per_g.value === '' || per_g.value === '1' || per_g.value === '100')) {
+    per_g.value = canonical ? 100 : 1;
+  }
   update_per_g_label();
 }
 
@@ -2692,8 +2702,8 @@ function update_per_g_label() {
   if (!form) return;
   const x    = parseFloat(form.querySelector('[name="per_g"]').value);
   const unit = form.querySelector('[name="per_unit"]').value;
-  if (unit === 'g') {
-    hint.textContent = (!isNaN(x) && x !== 100) ? '(wird auf 100 g umgerechnet)' : '';
+  if (_is_canonical_unit(unit)) {
+    hint.textContent = (!isNaN(x) && x !== 100) ? `(wird auf 100 ${unit} umgerechnet)` : '';
   } else {
     hint.textContent = '(gespeichert je Einheit)';
   }
@@ -2715,9 +2725,12 @@ function _food_macros_from_form(data) {
   const num  = v => { const f = parseFloat(v); return isNaN(f) ? 0 : f; };
   const unit = data.per_unit || 'g';
   let factor, unit_name = null, unit_grams = null;
-  if (unit === 'g') {
+  if (_is_canonical_unit(unit)) {
+    // g / ml — entered per 100, stored per 100 g (ml is 1:1 with grams). ml is
+    // remembered as the food's unit so it defaults to ml when logging.
     const x = parseFloat(data.per_g) || 100;
     factor  = 100 / x;
+    if (unit === 'ml') { unit_name = 'ml'; unit_grams = 1; }
   } else {
     // Macros were entered per X units. If the unit weight is unknown we
     // normalise against a virtual 100 g per unit — meal entries in this unit
