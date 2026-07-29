@@ -150,6 +150,9 @@ def _migrate_add_food_v2(conn: sqlite3.Connection) -> None:
     if "unit_name" not in foods_cols:
         conn.execute("ALTER TABLE foods ADD COLUMN unit_name TEXT")            # e.g. 'Stk.', 'Handvoll'
         conn.execute("ALTER TABLE foods ADD COLUMN unit_grams REAL")           # grams per unit
+    if "unit_weight_unit" not in foods_cols:
+        # Whether unit_grams is labelled as g or ml (both stored 1:1); display only.
+        conn.execute("ALTER TABLE foods ADD COLUMN unit_weight_unit TEXT")
     if "energy_density" not in foods_cols:
         conn.execute("ALTER TABLE foods ADD COLUMN energy_density TEXT NOT NULL DEFAULT 'hoch'")
         conn.execute("ALTER TABLE foods ADD COLUMN focus TEXT")                # 'kcal' | 'protein' | 'beides' | NULL
@@ -507,7 +510,7 @@ def get_all_foods() -> list[dict]:
     with _connect() as conn:
         rows = conn.execute(
             "SELECT id, name, kcal_per_100g, protein_per_100g, carbs_per_100g, fat_per_100g, "
-            "unit_name, unit_grams, category FROM foods ORDER BY name"
+            "unit_name, unit_grams, unit_weight_unit, category FROM foods ORDER BY name"
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -519,14 +522,14 @@ def _cap(s: str) -> str:
 
 def upsert_food(name: str, kcal: float, protein: float, carbs: float, fat: float,
                 unit_name: str | None = None, unit_grams: float | None = None,
-                category: str | None = None) -> int:
+                category: str | None = None, unit_weight_unit: str | None = None) -> int:
     name = _cap(name)
     now = _now()
     with _connect() as conn:
         conn.execute("""
             INSERT INTO foods (name, kcal_per_100g, protein_per_100g, carbs_per_100g, fat_per_100g,
-                               unit_name, unit_grams, category, created_at, last_used_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'standard'), ?, ?)
+                               unit_name, unit_grams, unit_weight_unit, category, created_at, last_used_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'standard'), ?, ?)
             ON CONFLICT(name) DO UPDATE SET
                 kcal_per_100g    = excluded.kcal_per_100g,
                 protein_per_100g = excluded.protein_per_100g,
@@ -536,9 +539,10 @@ def upsert_food(name: str, kcal: float, protein: float, carbs: float, fat: float
                 -- (auto-registration from meal items knows nothing about units)
                 unit_name        = COALESCE(excluded.unit_name, foods.unit_name),
                 unit_grams       = COALESCE(excluded.unit_grams, foods.unit_grams),
+                unit_weight_unit = COALESCE(excluded.unit_weight_unit, foods.unit_weight_unit),
                 last_used_at     = excluded.last_used_at
         """, (name, kcal, protein, carbs, fat,
-              unit_name, unit_grams, category, now, now))
+              unit_name, unit_grams, unit_weight_unit, category, now, now))
         if category is not None:
             conn.execute("UPDATE foods SET category=? WHERE LOWER(name)=LOWER(?)", (category, name))
         row = conn.execute("SELECT id FROM foods WHERE LOWER(name)=LOWER(?)", (name,)).fetchone()
@@ -547,16 +551,16 @@ def upsert_food(name: str, kcal: float, protein: float, carbs: float, fat: float
 
 def update_food(food_id: int, name: str, kcal: float, protein: float, carbs: float, fat: float,
                 unit_name: str | None = None, unit_grams: float | None = None,
-                category: str = "standard") -> None:
+                category: str = "standard", unit_weight_unit: str | None = None) -> None:
     cap_name = _cap(name)
     with _connect() as conn:
         old = conn.execute("SELECT name FROM foods WHERE id=?", (food_id,)).fetchone()
         old_name = old["name"] if old else cap_name
         conn.execute(
             "UPDATE foods SET name=?, kcal_per_100g=?, protein_per_100g=?, carbs_per_100g=?, fat_per_100g=?, "
-            "unit_name=?, unit_grams=?, category=? WHERE id=?",
+            "unit_name=?, unit_grams=?, unit_weight_unit=?, category=? WHERE id=?",
             (cap_name, kcal, protein, carbs, fat,
-             unit_name, unit_grams, category, food_id),
+             unit_name, unit_grams, unit_weight_unit, category, food_id),
         )
         # Diary entries are immutable snapshots: editing a food's nutrition or
         # name must NOT retroactively change already-logged meal_items — only

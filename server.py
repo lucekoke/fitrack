@@ -278,6 +278,7 @@ class FoodIn(BaseModel):
     fat_per_100g: float
     unit_name: str | None = None        # optional serving unit, e.g. 'Stk.'
     unit_grams: float | None = None     # grams per serving unit
+    unit_weight_unit: str | None = None # whether unit_grams is labelled g or ml
     category: str = "standard"          # 'standard' | 'kalorien' | 'protein' | 'nebenbei'
 
 
@@ -290,7 +291,8 @@ def get_foods():
 def create_food(body: FoodIn):
     food_id = db.upsert_food(body.name, body.kcal_per_100g, body.protein_per_100g,
                              body.carbs_per_100g, body.fat_per_100g,
-                             body.unit_name, body.unit_grams, body.category)
+                             body.unit_name, body.unit_grams, body.category,
+                             body.unit_weight_unit)
     return {"id": food_id}
 
 
@@ -298,7 +300,8 @@ def create_food(body: FoodIn):
 def update_food(food_id: int, body: FoodIn):
     db.update_food(food_id, body.name, body.kcal_per_100g, body.protein_per_100g,
                    body.carbs_per_100g, body.fat_per_100g,
-                   body.unit_name, body.unit_grams, body.category)
+                   body.unit_name, body.unit_grams, body.category,
+                   body.unit_weight_unit)
     return {"ok": True}
 
 

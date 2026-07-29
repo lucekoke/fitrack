@@ -2656,10 +2656,16 @@ function _food_modal_body(f) {
               style="display:inline-block;width:auto;margin:0 .4rem;padding:.2rem 1.6rem .2rem .5rem">${unit_opts}</select>
       <span id="per-g-hint" style="font-weight:normal;color:var(--pico-muted-color);font-size:.85rem"></span>
     </label>
-    <label id="unit-weight-field" ${named ? '' : 'hidden'}>Gewicht je Einheit (g, optional)
-      <input type="number" name="unit_weight" step="0.1" min="0"
-             value="${f && f.unit_grams != null ? f.unit_grams : ''}"
-             placeholder="leer = unbekannt, Angaben bleiben je Einheit">
+    <label id="unit-weight-field" ${named ? '' : 'hidden'}>Menge je Einheit (optional)
+      <span style="display:flex;gap:.5rem;align-items:center">
+        <input type="number" name="unit_weight" step="0.1" min="0" style="flex:1;margin:0"
+               value="${f && f.unit_grams != null ? f.unit_grams : ''}"
+               placeholder="leer = unbekannt, z.B. 540">
+        <select name="unit_weight_unit" style="width:auto;margin:0;padding:.2rem 1.6rem .2rem .5rem">
+          <option value="ml" ${(f && f.unit_weight_unit === 'g') ? '' : 'selected'}>ml</option>
+          <option value="g"  ${(f && f.unit_weight_unit === 'g') ? 'selected' : ''}>g</option>
+        </select>
+      </span>
     </label>
     <label>Kategorie
       <select name="category" onchange="on_category_change(this)">
@@ -2724,13 +2730,14 @@ function on_category_change(sel) {
 function _food_macros_from_form(data) {
   const num  = v => { const f = parseFloat(v); return isNaN(f) ? 0 : f; };
   const unit = data.per_unit || 'g';
-  let factor, unit_name = null, unit_grams = null;
+  let factor, unit_name = null, unit_grams = null, weight_unit = null;
   if (_is_canonical_unit(unit)) {
     // g / ml — entered per 100, stored per 100 g (ml is 1:1 with grams). ml is
     // remembered as the food's unit so it defaults to ml when logging.
     const x = parseFloat(data.per_g) || 100;
     factor  = 100 / x;
     if (unit === 'ml') { unit_name = 'ml'; unit_grams = 1; }
+    weight_unit = 'ml';
   } else {
     // Macros were entered per X units. If the unit weight is unknown we
     // normalise against a virtual 100 g per unit — meal entries in this unit
@@ -2740,6 +2747,8 @@ function _food_macros_from_form(data) {
     unit_name  = unit;
     unit_grams = (!isNaN(w) && w > 0) ? w : null;
     factor     = 100 / (x * (unit_grams || 100));
+    // The unit's weight can be given in g or ml (both 1:1) — remember which.
+    weight_unit = (unit_grams != null) ? (data.unit_weight_unit || 'ml') : null;
   }
   return {
     name:             data.name,
@@ -2749,6 +2758,7 @@ function _food_macros_from_form(data) {
     fat_per_100g:     num(data.fat)      * factor,
     unit_name,
     unit_grams,
+    unit_weight_unit: weight_unit,
     category:         data.category || 'standard',
   };
 }
