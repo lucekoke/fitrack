@@ -32,6 +32,14 @@ function fmt_reps(reps_json) {
   return unique.length === 1 ? String(reps[0]) : esc(reps.join(', '));
 }
 
+// Per-set hold times for isometric exercises: "30 s" or "30, 25, 20 s".
+function fmt_hold_times(dur_json) {
+  if (!dur_json) return '';
+  const d = JSON.parse(dur_json).map(v => v == null ? 0 : v);
+  const unique = [...new Set(d)];
+  return (unique.length === 1 ? String(d[0]) : d.join(', ')) + ' s';
+}
+
 // Weight: "100.0 kg (220.5 lbs)"  or  "BW"; per-hand weights marked "je Hand"
 function fmt_weight(wkg_json, wlbs_json, per_hand = false) {
   if (!wkg_json) return 'BW';
@@ -301,12 +309,16 @@ function tpl_exercise(ex = null) {
   const weight_val = ex
     ? (unit === 'lbs' ? esc(weight_to_input(ex.weight_lbs)) : esc(weight_to_input(ex.weight_kg)))
     : '';
+  const iso = ex && !!_exercise_meta(ex.exercise_name)?.is_isometric;
+  const dur_val = ex && ex.duration_s
+    ? esc(JSON.parse(ex.duration_s).map(v => v == null ? '' : v).join(','))
+    : '';
   return `<form>
     <label>Übung
       <input type="text" name="exercise_name" list="exercises-datalist"
              value="${ex ? esc(ex.exercise_name) : ''}"
              placeholder="z.B. Bankdrücken" required
-             onchange="update_exercise_history(this.value)">
+             onchange="on_ex_name_change(this)">
     </label>
     <div class="grid">
       <label>Sätze
@@ -328,6 +340,11 @@ function tpl_exercise(ex = null) {
         <option value="lbs" ${unit === 'lbs' ? 'selected' : ''}>lbs</option>
       </select>
     </div>
+    <label id="ex-duration-box" style="display:${iso ? 'block' : 'none'};margin-bottom:.5rem">
+      Dauer pro Satz (Sekunden) &mdash; für isometrische Übungen
+      <input type="text" name="duration_str" value="${dur_val}"
+             placeholder="30  oder  30,25,20">
+    </label>
     <label>Kommentar (optional)
       <input type="text" name="comment" value="${ex ? esc(ex.comment || '') : ''}">
     </label>
@@ -361,6 +378,14 @@ function _art_pick(cb) {
   if (cb === kraft) { kraft.checked = true;  dehn.checked = false; }
   else              { dehn.checked  = true;  kraft.checked = false; }
   root.querySelector('#exdb-muscle-box').disabled = dehn.checked;
+}
+
+// Exercise chosen in the log form → refresh its history and reveal the duration
+// field for isometric exercises (held for time).
+function on_ex_name_change(input) {
+  update_exercise_history(input.value);
+  const box = document.getElementById('ex-duration-box');
+  if (box) box.style.display = _exercise_meta(input.value)?.is_isometric ? 'block' : 'none';
 }
 
 // Personal history of one exercise: when it was done and with which weights.
@@ -606,7 +631,7 @@ function _workout_card(s) {
             <td>${esc(ex.exercise_name)} ${_hints_btn(ex.exercise_name)}</td>
             <td>${ex.sets}</td>
             <td>${fmt_reps(ex.reps_per_set)}</td>
-            <td>${fmt_weight(ex.weight_kg, ex.weight_lbs, _is_per_hand(ex.exercise_name))}</td>
+            <td>${_is_isometric_ex(ex.exercise_name) && ex.duration_s ? esc(fmt_hold_times(ex.duration_s)) + ' &nbsp;' : ''}${fmt_weight(ex.weight_kg, ex.weight_lbs, _is_per_hand(ex.exercise_name))}</td>
             ${_ex_group_muscle_cells(ex.exercise_name)}
             <td class="row-actions">
               <button class="outline secondary" title="Kopieren" onclick="copy_exercise(${ex.id},${s.id})">&#10064;</button>
@@ -1453,6 +1478,10 @@ function _exercise_db_modal_body(e) {
         <input type="checkbox" name="wm_total" onchange="_wmode_pick(this)" ${e && e.per_hand ? '' : 'checked'}> Gesamt
       </label>
     </div>
+    <label style="margin:0 0 1rem;display:inline-flex;align-items:center;gap:.4rem">
+      <input type="checkbox" id="exdb-isometric" ${e && e.is_isometric ? 'checked' : ''}>
+      Isometrisch (Halten auf Zeit — Dauer statt Wiederholungen; Volumen = Sekunden)
+    </label>
     <label>Video (z.B. YouTube-Link)
       <input type="text" id="exdb-comment" value="${comment}" placeholder="https://youtu.be/...">
     </label>
@@ -1495,6 +1524,7 @@ async function save_exercise_db(exercise_id) {
   const hints   = document.getElementById('exdb-hints').value.trim() || null;
   const per_hand = document.querySelector('#modal-body [name="per_hand"]').checked;
   const is_strength = document.querySelector('#modal-body [name="art_kraft"]').checked;
+  const is_isometric = document.getElementById('exdb-isometric').checked;
   // Muscles only apply to Kraftübungen — cleared for Dehnübungen
   const muscles           = is_strength ? (document.getElementById('exdb-muscles').value.trim()   || null) : null;
   const secondary_muscles = is_strength ? (document.getElementById('exdb-secondary').value.trim() || null) : null;
@@ -1503,7 +1533,7 @@ async function save_exercise_db(exercise_id) {
   const btn = document.getElementById('exdb-save-btn');
   btn.setAttribute('aria-busy', 'true');
   btn.disabled = true;
-  const payload = { name, comment, muscles, per_hand, hints, is_strength, muscle_group, secondary_muscles };
+  const payload = { name, comment, muscles, per_hand, hints, is_strength, muscle_group, secondary_muscles, is_isometric };
   try {
     if (exercise_id === null) {
       await api('POST', '/api/exercise-catalog', payload);
@@ -2055,14 +2085,8 @@ function render_recipes() {
   const rows = recipes.map(r => {
     let tk = 0, tp = 0, tc = 0, tf = 0, total_g = 0;
     for (const item of r.items) {
-      const food = _food_lookup(item.food_name);
-      if (food) {
-        const f = item.amount_grams / 100;
-        tk += food.kcal_per_100g    * f;
-        tp += food.protein_per_100g * f;
-        tc += food.carbs_per_100g   * f;
-        tf += food.fat_per_100g     * f;
-      }
+      const m = _recipe_item_macros(item, item.amount_grams || 0);
+      tk += m.kcal; tp += m.protein; tc += m.carbs; tf += m.fat;
       total_g += item.amount_grams || 0;
     }
     const portions = r.portions ? ` · ${(+r.portions)} Portion${r.portions === 1 ? '' : 'en'}` : '';
@@ -2075,16 +2099,12 @@ function render_recipes() {
     const detail_rows = r.items.map(i => {
       const amt  = (i.unit_name && i.amount_units != null)
         ? `${i.amount_units} ${esc(i.unit_name)}` : `${i.amount_grams} g`;
-      const food = _food_lookup(i.food_name);
-      const f    = (i.amount_grams || 0) / 100;
-      const ik = food ? r_kcal(food.kcal_per_100g * f)    : 0;
-      const ip = food ? r_nut(food.protein_per_100g * f)  : 0;
-      const ic = food ? r_nut(food.carbs_per_100g * f)    : 0;
-      const iff= food ? r_nut(food.fat_per_100g * f)      : 0;
+      const m = _recipe_item_macros(i, i.amount_grams || 0);
+      const onetime = i.kcal != null && !_food_lookup(i.food_name);
       return `<tr class="recipe-detail" data-parent="${r.id}" hidden>
-        <td style="padding-left:1.6rem;color:var(--pico-muted-color)">${esc(i.food_name)}</td>
+        <td style="padding-left:1.6rem;color:var(--pico-muted-color)">${esc(i.food_name)}${onetime ? ' <small>(einmalig)</small>' : ''}</td>
         <td style="color:var(--pico-muted-color)">${amt}</td>
-        <td>${ik}</td><td>${ip}g</td><td>${ic}g</td><td>${iff}g</td>
+        <td>${m.kcal}</td><td>${m.protein}g</td><td>${m.carbs}g</td><td>${m.fat}g</td>
         <td></td>
       </tr>`;
     }).join('');
@@ -2116,43 +2136,121 @@ function toggle_recipe_details(recipe_id, btn) {
     .forEach(tr => { tr.hidden = open; });
 }
 
-// Recipe ingredient row: name + amount + unit dropdown (g plus the food's own
-// serving unit, that unit preselected when defined). Amount converts to grams
-// on save, exactly like meal items.
-function _recipe_item_row_html(food_name = '', amount = '', unit = 'g') {
-  const food = food_name ? _food_lookup(food_name) : null;
+// Macros of a recipe item scaled to `grams`. A one-time ingredient (macros
+// stored on the item, and not shadowed by a catalog food) carries its own
+// nutrition; a regular ingredient derives it live from the food (edits.txt #3
+// + #4: recipes stay live-linked to the catalog, the diary does not).
+function _recipe_item_macros(item, grams) {
+  if (item.kcal != null && !_food_lookup(item.food_name)) {
+    const base = item.amount_grams || 0;
+    const s = base ? grams / base : 0;
+    return { kcal: r_kcal(item.kcal * s), protein: r_nut(item.protein_g * s),
+             carbs: r_nut(item.carbs_g * s), fat: r_nut(item.fat_g * s) };
+  }
+  const food = _food_lookup(item.food_name);
+  const f = grams / 100;
+  return food
+    ? { kcal: r_kcal(food.kcal_per_100g * f), protein: r_nut(food.protein_per_100g * f),
+        carbs: r_nut(food.carbs_per_100g * f), fat: r_nut(food.fat_per_100g * f) }
+    : { kcal: 0, protein: 0, carbs: 0, fat: 0 };
+}
+
+// Recipe ingredient row: name + amount + unit dropdown + per-ingredient macros.
+// When the name matches a catalog food the macros are auto-computed & read-only;
+// a one-time ingredient (not in the catalog) has editable macros stored on the
+// recipe. `macros` prefills the four fields; `onetime` forces manual entry.
+function _recipe_item_row_html(food_name = '', amount = '', unit = 'g', onetime = false, macros = null) {
+  const food = (!onetime && food_name) ? _food_lookup(food_name) : null;
   const un   = (food && food.unit_name)  ? ` data-unit-name="${esc(food.unit_name)}"` : '';
   const ug   = (food && food.unit_grams) ? ` data-unit-grams="${food.unit_grams}"` : '';
-  return `<tr${un}${ug}>
-    <td><input type="text" name="ri-food" value="${esc(food_name)}" list="foods-datalist" placeholder="Lebensmittel"
-               onchange="on_recipe_food_change(this)" style="margin:0;min-width:8rem"></td>
+  const pa   = food ? ` data-per100kcal="${food.kcal_per_100g}" data-per100protein="${food.protein_per_100g}" data-per100carbs="${food.carbs_per_100g}" data-per100fat="${food.fat_per_100g}"` : '';
+  const ot   = onetime ? ' data-onetime="true"' : '';
+  const ro   = !!food;                                     // catalog food drives the macros
+  const rv   = (v, f) => (v === '' || v == null) ? '' : f(v);
+  const mk = macros ? rv(macros.kcal, r_kcal) : '';
+  const mp = macros ? rv(macros.protein, r_nut) : '';
+  const mc = macros ? rv(macros.carbs, r_nut) : '';
+  const mf = macros ? rv(macros.fat, r_nut) : '';
+  const roAttr = ro ? 'readonly class="macro-auto"' : '';
+  return `<tr${un}${ug}${pa}${ot}>
+    <td><input type="text" name="ri-food" value="${esc(food_name)}" placeholder="Lebensmittel"
+               ${onetime ? '' : 'list="foods-datalist" oninput="on_recipe_food_change(this)" onchange="on_recipe_food_change(this)"'}
+               style="margin:0;min-width:8rem"></td>
     <td style="white-space:nowrap">
       <input type="number" name="ri-amt" value="${amount}" step="any" min="0" placeholder="Menge"
-             style="margin:0;width:4.5rem;display:inline-block">
-      <select name="ri-unit" style="margin:0;width:auto;display:inline-block;padding:.2rem 1.4rem .2rem .4rem">${_unit_options_html(food, unit)}</select>
+             oninput="on_recipe_amt_change(this)" style="margin:0;width:4.5rem;display:inline-block">
+      <select name="ri-unit" onchange="on_recipe_unit_change(this)"
+              style="margin:0;width:auto;display:inline-block;padding:.2rem 1.4rem .2rem .4rem">${_unit_options_html(food, unit)}</select>
     </td>
+    <td><input type="number" name="ri-kcal"    value="${mk}" step="1"   placeholder="kcal" style="margin:0;width:4.5rem" ${roAttr}></td>
+    <td><input type="number" name="ri-protein" value="${mp}" step="0.1" placeholder="g"    style="margin:0;width:4rem"   ${roAttr}></td>
+    <td><input type="number" name="ri-carbs"   value="${mc}" step="0.1" placeholder="g"    style="margin:0;width:4rem"   ${roAttr}></td>
+    <td><input type="number" name="ri-fat"     value="${mf}" step="0.1" placeholder="g"    style="margin:0;width:4rem"   ${roAttr}></td>
     <td><button type="button" class="outline contrast"
                 style="padding:.15rem .4rem;margin:0;width:auto;font-size:.8rem"
                 onclick="this.closest('tr').remove()">&#10005;</button></td>
   </tr>`;
 }
 
-// Keep a recipe row's unit dropdown in sync with the chosen food.
+function _recipe_set_macros_readonly(row, readonly) {
+  ['ri-kcal', 'ri-protein', 'ri-carbs', 'ri-fat'].forEach(n => {
+    const el = row.querySelector(`[name="${n}"]`);
+    if (!el) return;
+    el.readOnly = readonly;
+    el.classList.toggle('macro-auto', readonly);
+  });
+}
+
+function _recipe_recalc(row) {
+  if (row.dataset.per100kcal === undefined) return;   // one-time → manual macros
+  const g = _recipe_row_grams(row);
+  if (isNaN(g)) return;
+  const f = g / 100;
+  const set = (n, v) => { const el = row.querySelector(`[name="${n}"]`); if (el) el.value = v; };
+  set('ri-kcal',    r_kcal(parseFloat(row.dataset.per100kcal)    * f));
+  set('ri-protein', r_nut(parseFloat(row.dataset.per100protein)  * f));
+  set('ri-carbs',   r_nut(parseFloat(row.dataset.per100carbs)    * f));
+  set('ri-fat',     r_nut(parseFloat(row.dataset.per100fat)      * f));
+}
+
+// Name typed/picked → resolve the food, sync unit + per-100 data, auto-fill or
+// free up the macro fields.
 function on_recipe_food_change(input) {
   const row = input.closest('tr');
+  if (row.dataset.onetime === 'true') return;         // one-time: always manual
   const food = _food_lookup(input.value);
-  const sel = row.querySelector('[name="ri-unit"]');
-  if (food && food.unit_name) { row.dataset.unitName = food.unit_name; } else { delete row.dataset.unitName; }
-  if (food && food.unit_grams) { row.dataset.unitGrams = food.unit_grams; } else { delete row.dataset.unitGrams; }
-  if (sel) sel.innerHTML = _unit_options_html(food, (food && food.unit_name) || sel.value);
+  const sel  = row.querySelector('[name="ri-unit"]');
+  if (food) {
+    row.dataset.per100kcal    = food.kcal_per_100g;
+    row.dataset.per100protein = food.protein_per_100g;
+    row.dataset.per100carbs   = food.carbs_per_100g;
+    row.dataset.per100fat     = food.fat_per_100g;
+    if (food.unit_grams) row.dataset.unitGrams = food.unit_grams; else delete row.dataset.unitGrams;
+    if (food.unit_name)  row.dataset.unitName  = food.unit_name;  else delete row.dataset.unitName;
+    if (sel) {
+      const auto = row.dataset.unitManual !== '1' && sel.value === 'g' && food.unit_name;
+      sel.innerHTML = _unit_options_html(food, auto ? food.unit_name : sel.value);
+    }
+    _recipe_set_macros_readonly(row, true);
+    _recipe_recalc(row);
+  } else {
+    delete row.dataset.per100kcal; delete row.dataset.per100protein;
+    delete row.dataset.per100carbs; delete row.dataset.per100fat;
+    delete row.dataset.unitName; delete row.dataset.unitGrams;
+    if (sel) sel.innerHTML = _unit_options_html(null, sel.value);
+    _recipe_set_macros_readonly(row, false);           // unknown food → enter macros by hand
+  }
 }
+
+function on_recipe_amt_change(input) { _recipe_recalc(input.closest('tr')); }
+function on_recipe_unit_change(sel)  { sel.closest('tr').dataset.unitManual = '1'; _recipe_recalc(sel.closest('tr')); }
 
 // Grams for a recipe row (mirrors _row_grams for meal items).
 function _recipe_row_grams(row) {
   const val = parseFloat(row.querySelector('[name="ri-amt"]').value);
   if (isNaN(val)) return NaN;
   const unit = row.querySelector('[name="ri-unit"]').value;
-  if (unit === 'g') return val;
+  if (unit === 'g' || unit === 'ml') return val;   // ml treated 1:1 with grams
   if (unit === row.dataset.unitName) {
     const ug = parseFloat(row.dataset.unitGrams);
     return val * (isNaN(ug) ? 100 : ug);
@@ -2165,12 +2263,31 @@ function add_recipe_item_row() {
   document.querySelector('#rm-items tr:last-child input').focus();
 }
 
+// A one-time recipe ingredient: not from the catalog, macros entered by hand.
+function add_recipe_skip_row() {
+  document.getElementById('rm-items').insertAdjacentHTML('beforeend',
+    _recipe_item_row_html('', '', 'g', true));
+  document.querySelector('#rm-items tr:last-child input').focus();
+}
+
+// True when the stored item is a one-time ingredient (its own macros, and no
+// catalog food shadowing it).
+function _recipe_item_is_onetime(i) {
+  return i.kcal != null && !_food_lookup(i.food_name);
+}
+
 function _recipe_modal_body(r) {
   const name = r ? esc(r.name) : '';
-  const rows = r ? r.items.map(i =>
-    _recipe_item_row_html(i.food_name,
-      (i.unit_name && i.amount_units != null) ? i.amount_units : i.amount_grams,
-      (i.unit_name && i.amount_units != null) ? i.unit_name : 'g')).join('') : '';
+  const rows = r ? r.items.map(i => {
+    const onetime = _recipe_item_is_onetime(i);
+    const in_units = i.unit_name && i.amount_units != null;
+    return _recipe_item_row_html(
+      i.food_name,
+      in_units ? i.amount_units : i.amount_grams,
+      in_units ? i.unit_name : 'g',
+      onetime,
+      _recipe_item_macros(i, i.amount_grams || 0));
+  }).join('') : '';
   return `<div>
     <div class="grid">
       <label>Rezeptname<input type="text" id="rm-name" value="${name}" placeholder="z.B. Chili con Carne" required></label>
@@ -2180,13 +2297,16 @@ function _recipe_modal_body(r) {
     <strong style="font-size:.9rem">Zutaten</strong>
     <div style="overflow-x:auto;margin-top:.4rem">
       <table style="font-size:.85rem;margin:0">
-        <thead><tr><th>Lebensmittel</th><th>Menge</th><th></th></tr></thead>
+        <thead><tr><th>Lebensmittel</th><th>Menge</th><th>kcal</th><th>Eiweiß</th><th>KH</th><th>Fett</th><th></th></tr></thead>
         <tbody id="rm-items">${rows}</tbody>
       </table>
     </div>
-    <button type="button" class="secondary outline"
-            style="width:auto;font-size:.85rem;margin:.6rem 0 1rem"
-            onclick="add_recipe_item_row()">+ Zutat hinzufügen</button>
+    <div style="display:flex;gap:.5rem;margin:.6rem 0 1rem;flex-wrap:wrap">
+      <button type="button" class="secondary outline" style="width:auto;font-size:.85rem;margin:0"
+              onclick="add_recipe_item_row()">+ Zutat</button>
+      <button type="button" class="secondary outline" style="width:auto;font-size:.85rem;margin:0"
+              onclick="add_recipe_skip_row()" title="Einmalige Zutat — nicht aus der Datenbank, Nährwerte selbst eingeben">+ Einmalig</button>
+    </div>
     <div class="form-footer">
       <button type="button" class="secondary outline" onclick="close_modal()">Abbrechen</button>
       <button type="button" id="rm-save-btn" onclick="save_recipe(${r ? r.id : 'null'})">Speichern</button>
@@ -2225,10 +2345,19 @@ async function save_recipe(recipe_id) {
     if (!food || isNaN(grams) || grams <= 0) continue;
     const unit = row.querySelector('[name="ri-unit"]').value;
     const raw  = parseFloat(row.querySelector('[name="ri-amt"]').value);
+    // A one-time ingredient (flagged, or a name not in the catalog) stores its
+    // own macros; a regular ingredient leaves them null and stays linked to the
+    // food so future edits to that food flow through to the recipe.
+    const onetime = row.dataset.onetime === 'true' || !_food_lookup(food);
+    const num = n => { const v = row.querySelector(`[name="${n}"]`).value; return v === '' ? 0 : parseFloat(v); };
     items.push({
       food_name: food, amount_grams: grams,
       amount_units: unit !== 'g' && !isNaN(raw) ? raw : null,
       unit_name:    unit !== 'g' && !isNaN(raw) ? unit : null,
+      kcal:      onetime ? num('ri-kcal')    : null,
+      protein_g: onetime ? num('ri-protein') : null,
+      carbs_g:   onetime ? num('ri-carbs')   : null,
+      fat_g:     onetime ? num('ri-fat')     : null,
     });
   }
   const payload = { name, items, portions: isNaN(portions) || portions <= 0 ? null : portions };
@@ -2374,12 +2503,21 @@ function add_adapt_item_row() {
   document.querySelector('#ra-adapt tr:last-child input').focus();
 }
 
-// Build the temporary (edited) recipe from the adapt dialog's current rows.
+// Build the temporary (edited) recipe from the adapt dialog's current rows,
+// carrying one-time ingredients' hand-entered macros just like save_recipe.
 function _adapt_temp_recipe() {
   const items = [...document.querySelectorAll('#ra-adapt tr')].map(row => {
     const food  = row.querySelector('[name="ri-food"]').value.trim();
     const grams = _recipe_row_grams(row);
-    return { food_name: food, amount_grams: grams };
+    const onetime = row.dataset.onetime === 'true' || !_food_lookup(food);
+    const num = n => { const v = row.querySelector(`[name="${n}"]`).value; return v === '' ? 0 : parseFloat(v); };
+    return {
+      food_name: food, amount_grams: grams,
+      kcal:      onetime ? num('ri-kcal')    : null,
+      protein_g: onetime ? num('ri-protein') : null,
+      carbs_g:   onetime ? num('ri-carbs')   : null,
+      fat_g:     onetime ? num('ri-fat')     : null,
+    };
   }).filter(i => i.food_name && !isNaN(i.amount_grams) && i.amount_grams > 0);
   const p = parseFloat(document.getElementById('ra-portions').value);
   return { items, portions: isNaN(p) || p <= 0 ? null : p };
@@ -2418,16 +2556,8 @@ function apply_recipe_adapted() {
   const round1 = v => Math.round(v * 10) / 10;
   for (const item of tmp.items) {
     const amount = round1(item.amount_grams * scale);
-    const f = _food_lookup(item.food_name);
-    let kcal = 0, protein = 0, carbs = 0, fat = 0;
-    if (f) {
-      const fac = amount / 100;
-      kcal    = r_kcal(f.kcal_per_100g    * fac);
-      protein = round1(f.protein_per_100g * fac);
-      carbs   = round1(f.carbs_per_100g   * fac);
-      fat     = round1(f.fat_per_100g     * fac);
-    }
-    add_em_item_row(item.food_name, amount, kcal, protein, carbs, fat);
+    const m = _recipe_item_macros(item, amount);
+    add_em_item_row(item.food_name, amount, m.kcal, m.protein, m.carbs, m.fat);
   }
   update_meal_name_placeholder();
 }
@@ -2478,15 +2608,8 @@ async function apply_recipe_to_meal() {
   const round1 = v => Math.round(v * 10) / 10;
   for (const item of r.items) {
     const amount = round1(item.amount_grams * scale);
-    const food = _food_lookup(item.food_name);
-    let kcal = 0, protein = 0, carbs = 0, fat = 0;
-    if (food) {
-      const f = amount / 100;
-      kcal    = r_kcal(food.kcal_per_100g    * f);
-      protein = round1(food.protein_per_100g * f);
-      carbs   = round1(food.carbs_per_100g   * f);
-      fat     = round1(food.fat_per_100g     * f);
-    }
+    const m = _recipe_item_macros(item, amount);
+    const { kcal, protein, carbs, fat } = m;
     add_em_item_row(item.food_name, amount, kcal, protein, carbs, fat);
   }
   update_meal_name_placeholder();
@@ -2788,12 +2911,13 @@ function update_meal_name_placeholder() {
   inp.placeholder = derived || 'wird automatisch aus den Zutaten gebildet';
 }
 
-// Unit <select> options for an ingredient row: only the units that apply to
-// THIS food — grams plus the food's own serving unit (if it has one). A unit
-// already stored on the row (e.g. a legacy value) is kept selectable.
+// Unit <select> options for an ingredient row: grams and millilitres are always
+// available (both stored 1:1 as the canonical grams), plus the food's own
+// serving unit if it has one. A unit already stored on the row (e.g. a legacy
+// value) is kept selectable.
 function _unit_options_html(food, selected = 'g') {
-  const units = ['g'];
-  if (food && food.unit_name && food.unit_name !== 'g') units.push(food.unit_name);
+  const units = ['g', 'ml'];
+  if (food && food.unit_name && !units.includes(food.unit_name)) units.push(food.unit_name);
   if (selected && !units.includes(selected)) units.push(selected);
   return units.map(u => `<option value="${esc(u)}" ${u === selected ? 'selected' : ''}>${esc(u)}</option>`).join('');
 }
@@ -2805,7 +2929,7 @@ function _row_grams(row) {
   const val = parseFloat(row.querySelector('[name="amount_grams"]').value);
   if (isNaN(val)) return NaN;
   const unit = row.querySelector('[name="unit"]').value;
-  if (unit === 'g') return val;
+  if (unit === 'g' || unit === 'ml') return val;   // ml treated 1:1 with grams
   if (unit === row.dataset.unitName) {
     const ug = parseFloat(row.dataset.unitGrams);
     return val * (isNaN(ug) ? 100 : ug);
@@ -3575,7 +3699,9 @@ function render_analysis() {
     el.innerHTML = '<p class="empty">Bitte eine Übung wählen.</p>';
   } else {
     const name  = ser.slice(3);
-    const is_bw = _is_bodyweight(name);
+    // Isometric holds have volume (seconds) even without added weight, so they
+    // are never treated as "just bodyweight" for plotting.
+    const is_bw = !_is_isometric_ex(name) && _is_bodyweight(name);
     if (kind === 'reps') {
       render_line_chart(el, _reps_points(name), 'Wiederholungen: ' + name, range);
     } else if (is_bw) {
@@ -3747,8 +3873,13 @@ function _iso_week(date_str) {
 }
 
 // Volume of one workout_exercise entry.
-// Weighted: Σ reps × weight (per-side weights count double). Bodyweight: Σ reps.
+// Isometric: Σ hold time (seconds). Weighted: Σ reps × weight (per-side weights
+// count double). Bodyweight: Σ reps.
 function _exercise_volume(ex, is_bw, unit, mult) {
+  if (_is_isometric_ex(ex.exercise_name)) {
+    if (!ex.duration_s) return 0;
+    return JSON.parse(ex.duration_s).reduce((a, d) => a + (d || 0), 0);
+  }
   const reps = JSON.parse(ex.reps_per_set);
   if (is_bw) return reps.reduce((a, r) => a + (r || 0), 0);
   if (!_has_weight(ex)) return 0;
@@ -3760,10 +3891,19 @@ function _exercise_volume(ex, is_bw, unit, mult) {
   return v;
 }
 
+function _is_isometric_ex(name) {
+  return !!_exercise_meta(name)?.is_isometric;
+}
+
+// Unit label for a volume chart: seconds for isometric holds, else weight×reps.
+function _volume_unit(name) {
+  return _is_isometric_ex(name) ? 's' : `${_series_unit(name)}×Wdh`;
+}
+
 // Weekly training volume for a (weighted) exercise. The week axis spans the
 // full workout history (first→last workout week); untrained weeks show zero.
 function _volume_weeks(name) {
-  const unit  = `${_series_unit(name)}×Wdh`;
+  const unit  = _volume_unit(name);
   const wunit = _series_unit(name);
   const mult  = _is_per_hand(name) ? 2 : 1;
   const by_week = new Map();
@@ -3799,7 +3939,7 @@ function _all_sessions_sorted() {
 // Volume for a (weighted) exercise, one bar per workout — INCLUDING workouts
 // where the exercise wasn't trained (empty bar).
 function _volume_all_workouts(name) {
-  const unit  = `${_series_unit(name)}×Wdh`;
+  const unit  = _volume_unit(name);
   const wunit = _series_unit(name);
   const mult  = _is_per_hand(name) ? 2 : 1;
   const short = d => `${d.slice(8, 10)}.${d.slice(5, 7)}.`;

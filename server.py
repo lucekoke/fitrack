@@ -88,6 +88,7 @@ class ExerciseIn(BaseModel):
     weight_str: str | None = None
     weight_unit: str = "kg"   # "kg" or "lbs"
     comment: str | None = None
+    duration_str: str | None = None   # per-set hold time in seconds (isometric)
 
 
 class WorkoutSessionIn(BaseModel):
@@ -178,8 +179,9 @@ def _resolve_weights(weight_str: str | None, weight_unit: str, sets: int):
 def add_exercise(session_id: int, body: ExerciseIn):
     reps = _parse_reps(body.reps_str, body.sets)
     wkg, wlbs = _resolve_weights(body.weight_str, body.weight_unit, body.sets)
+    dur = _parse_weight(body.duration_str, body.sets)   # per-set seconds, same parsing
     ex_id = db.insert_workout_exercise(
-        session_id, body.exercise_name, body.sets, reps, wkg, wlbs, body.comment
+        session_id, body.exercise_name, body.sets, reps, wkg, wlbs, body.comment, dur
     )
     return {"id": ex_id}
 
@@ -188,8 +190,9 @@ def add_exercise(session_id: int, body: ExerciseIn):
 def update_exercise(exercise_id: int, body: ExerciseIn):
     reps = _parse_reps(body.reps_str, body.sets)
     wkg, wlbs = _resolve_weights(body.weight_str, body.weight_unit, body.sets)
+    dur = _parse_weight(body.duration_str, body.sets)
     db.update_workout_exercise(
-        exercise_id, body.exercise_name, body.sets, reps, wkg, wlbs, body.comment
+        exercise_id, body.exercise_name, body.sets, reps, wkg, wlbs, body.comment, dur
     )
     return {"ok": True}
 
@@ -394,6 +397,7 @@ class ExerciseCatalogIn(BaseModel):
     is_strength: bool = True              # Kraftübung (True) vs Dehnübung (False)
     muscle_group: str | None = None       # Rücken/Core/Beine/Arme/Brust
     secondary_muscles: str | None = None  # Nebenmuskeln
+    is_isometric: bool = False            # held for time (plank etc.) → volume = seconds
 
 @app.get("/api/exercise-catalog")
 def get_exercise_catalog():
@@ -402,12 +406,14 @@ def get_exercise_catalog():
 @app.post("/api/exercise-catalog", status_code=201)
 def create_exercise_catalog(body: ExerciseCatalogIn):
     return {"id": db.upsert_exercise(body.name, body.comment, body.muscles, body.per_hand,
-                                     body.hints, body.is_strength, body.muscle_group, body.secondary_muscles)}
+                                     body.hints, body.is_strength, body.muscle_group,
+                                     body.secondary_muscles, body.is_isometric)}
 
 @app.put("/api/exercise-catalog/{exercise_id}")
 def update_exercise_catalog(exercise_id: int, body: ExerciseCatalogIn):
     db.update_exercise_catalog(exercise_id, body.name, body.comment, body.muscles, body.per_hand,
-                               body.hints, body.is_strength, body.muscle_group, body.secondary_muscles)
+                               body.hints, body.is_strength, body.muscle_group,
+                               body.secondary_muscles, body.is_isometric)
     return {"ok": True}
 
 
@@ -529,6 +535,12 @@ class RecipeItemIn(BaseModel):
     amount_grams: float
     amount_units: float | None = None   # amount as entered (e.g. 2 for "2 Stk.")
     unit_name: str | None = None        # its display unit
+    # One-time ingredients not in the catalog carry their own macros; regular
+    # ingredients leave these null and get their macros from the food.
+    kcal: float | None = None
+    protein_g: float | None = None
+    carbs_g: float | None = None
+    fat_g: float | None = None
 
 class RecipeIn(BaseModel):
     name: str
