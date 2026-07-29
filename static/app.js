@@ -5,6 +5,7 @@ let workouts  = [];
 let endurance = [];
 let sports    = [];
 let meals     = [];
+let empty_days = [];   // dates added to the diary that have no meal yet
 let foods_db  = [];
 let recipes   = [];
 let exercise_catalog = [];
@@ -145,6 +146,14 @@ function opt(val, suffix = '', fallback = '—') {
 function today_local() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// Format an ISO date (YYYY-MM-DD) as German dd.mm.yyyy for display. Inputs that
+// aren't a full ISO date are returned unchanged.
+function fmt_de(iso) {
+  return (typeof iso === 'string' && /^\d{4}-\d{2}-\d{2}/.test(iso))
+    ? `${iso.slice(8, 10)}.${iso.slice(5, 7)}.${iso.slice(0, 4)}`
+    : (iso ?? '');
 }
 
 function esc(str) {
@@ -398,7 +407,7 @@ function update_exercise_history(name) {
     for (const ex of s.exercises) {
       if (ex.exercise_name.toLowerCase() !== clean) continue;
       rows.push(`<tr>
-        <td style="white-space:nowrap">${esc(s.date)}</td>
+        <td style="white-space:nowrap">${fmt_de(s.date)}</td>
         <td>${ex.sets}×${fmt_reps(ex.reps_per_set)}</td>
         <td>${fmt_weight(ex.weight_kg, ex.weight_lbs, _is_per_hand(ex.exercise_name))}</td>
       </tr>`);
@@ -594,7 +603,7 @@ function _workout_card(s) {
       <div class="session-header">
         <span>
           <span class="activity-badge badge-workout">💪 Kraft</span>
-          <strong>${esc(s.date)}</strong>
+          <strong>${fmt_de(s.date)}</strong>
           ${s.comment ? `<small style="margin-left:.5rem">${esc(s.comment)}</small>` : ''}
           <small style="margin-left:.5rem;color:var(--pico-muted-color)">
             (${s.exercises.length} Übung${s.exercises.length !== 1 ? 'en' : ''})
@@ -670,7 +679,7 @@ function _endurance_card(s) {
       <div class="session-header">
         <span>
           <span class="activity-badge badge-endurance">${label}</span>
-          <strong>${esc(s.date)}</strong>
+          <strong>${fmt_de(s.date)}</strong>
         </span>
         <div>
           <button class="outline secondary" onclick="open_edit_endurance(${s.id})">Bearbeiten</button>
@@ -707,7 +716,7 @@ function _sport_card(s) {
       <div class="session-header">
         <span>
           <span class="activity-badge badge-sport">⚽ Sport</span>
-          <strong>${esc(s.date)}</strong>
+          <strong>${fmt_de(s.date)}</strong>
           &middot; <em>${esc(s.sport_name)}</em>
         </span>
         <div>
@@ -805,7 +814,7 @@ function open_edit_workout(session_id) {
 async function del_workout(session_id) {
   const s = workouts.find(w => w.id === session_id);
   if (!s) return;
-  if (!confirm(`Session vom ${s.date} und alle ${s.exercises.length} Übung(en) löschen?`)) return;
+  if (!confirm(`Session vom ${fmt_de(s.date)} und alle ${s.exercises.length} Übung(en) löschen?`)) return;
   await api('DELETE', `/api/workouts/${session_id}`);
   await load_workouts();
 }
@@ -862,7 +871,7 @@ function copy_exercise(exercise_id, session_id) {
   if (!ex) return;
   const sorted = [...workouts].sort((a, b) => b.date.localeCompare(a.date));
   const opts = sorted.map(w =>
-    `<option value="${w.id}" ${w.id === session_id ? 'selected' : ''}>${esc(w.date)}${w.comment ? ' — ' + esc(w.comment) : ''} (${w.exercises.length} Übungen)</option>`
+    `<option value="${w.id}" ${w.id === session_id ? 'selected' : ''}>${fmt_de(w.date)}${w.comment ? ' — ' + esc(w.comment) : ''} (${w.exercises.length} Übungen)</option>`
   ).join('');
   open_modal(`Übung kopieren: ${esc(ex.exercise_name)}`, `
     <label>Ziel-Workout
@@ -1107,7 +1116,7 @@ async function del_endurance(id) {
   const s = endurance.find(e => e.id === id);
   if (!s) return;
   const label = { run: 'Lauf', ride: 'Radfahrt', swim: 'Schwimmen' }[s.activity_type] || 'Aktivität';
-  if (!confirm(`${label} vom ${s.date} löschen?`)) return;
+  if (!confirm(`${label} vom ${fmt_de(s.date)} löschen?`)) return;
   await api('DELETE', `/api/endurance/${id}`);
   await load_endurance();
 }
@@ -1154,7 +1163,7 @@ function open_edit_sport(id) {
 async function del_sport(id) {
   const s = sports.find(sp => sp.id === id);
   if (!s) return;
-  if (!confirm(`"${s.sport_name}" vom ${s.date} löschen?`)) return;
+  if (!confirm(`"${s.sport_name}" vom ${fmt_de(s.date)} löschen?`)) return;
   await api('DELETE', `/api/sports/${id}`);
   await load_sports();
 }
@@ -1164,6 +1173,7 @@ async function del_sport(id) {
 async function load_meals() {
   try {
     meals = await api('GET', '/api/meals');
+    try { empty_days = await api('GET', '/api/diary-days'); } catch { empty_days = []; }
     render_meals();
   } catch (err) {
     document.getElementById('meals-list').innerHTML =
@@ -1912,16 +1922,18 @@ function _target_row_html(dk, dp) {
 
 function render_meals() {
   const el = document.getElementById('meals-list');
-  if (!meals.length) {
+  // Group by date, newest first — including days the user added without a meal.
+  const by_date = {};
+  for (const s of meals) (by_date[s.date] = by_date[s.date] || []).push(s);
+  const all_dates = new Set([...Object.keys(by_date), ...empty_days]);
+  if (!all_dates.size) {
     el.innerHTML = '<p class="empty">Noch keine Mahlzeiten vorhanden.</p>';
     return;
   }
-  // Group by date, newest first
-  const by_date = {};
-  for (const s of meals) (by_date[s.date] = by_date[s.date] || []).push(s);
-  const dates = Object.keys(by_date).sort((a, b) => b.localeCompare(a));
+  const dates = [...all_dates].sort((a, b) => b.localeCompare(a));
   el.innerHTML = dates.map(date => {
-    const ss = by_date[date];
+    const ss = by_date[date] || [];
+    if (!ss.length) return _empty_day_html(date);
     const dk = ss.reduce((a, s) => a + s.items.reduce((b, i) => b + i.kcal,      0), 0);
     const dp = ss.reduce((a, s) => a + s.items.reduce((b, i) => b + i.protein_g, 0), 0);
     const dc = ss.reduce((a, s) => a + s.items.reduce((b, i) => b + i.carbs_g,   0), 0);
@@ -1930,7 +1942,7 @@ function render_meals() {
     <article>
       <header>
         <div class="session-header">
-          <strong>${esc(date)}</strong>
+          <strong>${fmt_de(date)}</strong>
           <span class="day-macros">${Math.round(dk)}&thinsp;kcal &nbsp;·&nbsp; ${dp.toFixed(1)}g P &nbsp;·&nbsp; ${dc.toFixed(1)}g KH &nbsp;·&nbsp; ${df.toFixed(1)}g F</span>
           <button onclick="open_new_meal_for('${date}')">+ Mahlzeit</button>
         </div>
@@ -1996,6 +2008,27 @@ function render_meals() {
 }
 
 
+// A day added to the diary that has no meal yet (edits: add a day without a meal).
+function _empty_day_html(date) {
+  return `
+    <article>
+      <header>
+        <div class="session-header">
+          <strong>${fmt_de(date)}</strong>
+          <span class="day-macros" style="color:var(--pico-muted-color)">noch keine Mahlzeit</span>
+          <button onclick="open_new_meal_for('${date}')">+ Mahlzeit</button>
+          <button class="outline contrast" title="Tag entfernen" style="width:auto"
+                  onclick="remove_empty_day('${date}')">&#10005;</button>
+        </div>
+      </header>
+    </article>`;
+}
+
+async function remove_empty_day(date) {
+  try { await api('DELETE', `/api/diary-days/${date}`); } catch { /* ignore */ }
+  await load_meals();
+}
+
 // Expand/collapse the per-ingredient rows of a multi-ingredient meal (edits #11).
 function toggle_meal_details(meal_id, btn) {
   const open = btn.getAttribute('aria-expanded') === 'true';
@@ -2040,11 +2073,16 @@ function render_foods_db() {
       <th>Lebensmittel</th><th>Basis</th><th>kcal</th><th>Eiweiß</th><th>KH</th><th>Fett</th><th></th>
     </tr></thead>
     <tbody>${sorted.map(f => {
-      // Unit-based foods are shown per 1 unit (their entry basis), others per 100 g
-      const fac   = f.unit_name ? (f.unit_grams || 100) / 100 : 1;
-      const basis = f.unit_name
-        ? `1 ${esc(f.unit_name)}${f.unit_grams ? ` (${f.unit_grams}&thinsp;g)` : ''}`
-        : '100 g';
+      // Named-unit foods are shown per 1 unit (their entry basis); g/ml are
+      // canonical and shown per 100 (ml is 1:1 with grams).
+      const named = f.unit_name && !_is_canonical_unit(f.unit_name);
+      const fac   = named ? (f.unit_grams || 100) / 100 : 1;
+      // Match the editor's default: only 'g' is grams, everything else (incl.
+      // not-yet-saved null) is shown as ml — g and ml are 1:1 anyway.
+      const wu    = f.unit_weight_unit === 'g' ? 'g' : 'ml';
+      const basis = named
+        ? `1 ${esc(f.unit_name)}${f.unit_grams ? ` (${f.unit_grams}&thinsp;${esc(wu)})` : ''}`
+        : `100 ${esc(f.unit_name || 'g')}`;
       return `
       <tr>
         <td>${esc(f.name)}${category_badge(f)}</td>
@@ -2636,8 +2674,11 @@ function _food_modal_body(f) {
   const name    = f ? esc(f.name) : '';
   // A "named" unit (Stk., Dose/Glas, …) stores macros per 1 unit; g and ml are
   // canonical (per 100), so they use the plain per-100 entry like grams.
+  // Round the shown value to 2 decimals so extrapolated per-100 figures (e.g.
+  // 133.33 from a per-15 entry) stay editable instead of being repeating
+  // decimals that fail the input's step validation.
   const named   = !!(f && f.unit_name && !_is_canonical_unit(f.unit_name));
-  const to_unit = v => named ? Math.round(v * ((f.unit_grams || 100) / 100) * 100) / 100 : v;
+  const to_unit = v => Math.round(v * (named ? (f.unit_grams || 100) / 100 : 1) * 100) / 100;
   const kcal    = f ? to_unit(f.kcal_per_100g)    : '';
   const protein = f ? to_unit(f.protein_per_100g) : '';
   const carbs   = f ? to_unit(f.carbs_per_100g)   : '';
@@ -2676,12 +2717,12 @@ function _food_modal_body(f) {
       </select>
     </label>
     <div class="grid">
-      <label>kcal<input type="number" name="kcal" step="0.01" value="${kcal}" required></label>
-      <label>Eiweiß (g)<input type="number" name="protein" step="0.01" value="${protein}" required></label>
+      <label>kcal<input type="number" name="kcal" step="any" value="${kcal}" required></label>
+      <label>Eiweiß (g)<input type="number" name="protein" step="any" value="${protein}" required></label>
     </div>
     <div class="grid">
-      <label>KH (g)<input type="number" name="carbs" step="0.01" value="${carbs}" required></label>
-      <label>Fett (g)<input type="number" name="fat" step="0.01" value="${fat}" required></label>
+      <label>KH (g)<input type="number" name="carbs" step="any" value="${carbs}" required></label>
+      <label>Fett (g)<input type="number" name="fat" step="any" value="${fat}" required></label>
     </div>
     <div class="form-footer">
       <button type="button" class="secondary outline" onclick="close_modal()">Abbrechen</button>
@@ -2802,28 +2843,28 @@ function open_new_meal() {
 // (Native date inputs can't grey individual dates, so existing days are
 // rejected on submit instead.)
 function open_add_day() {
-  const existing = new Set(meals.map(m => m.date));
+  const existing = new Set([...meals.map(m => m.date), ...empty_days]);
   const def = today_local();
   const days_hint = existing.size
-    ? `Bereits vorhanden: ${[...existing].sort((a, b) => b.localeCompare(a)).slice(0, 8).join(', ')}${existing.size > 8 ? ' …' : ''}`
+    ? `Bereits vorhanden: ${[...existing].sort((a, b) => b.localeCompare(a)).slice(0, 8).map(fmt_de).join(', ')}${existing.size > 8 ? ' …' : ''}`
     : '';
   open_modal('Tag hinzufügen', `<form>
     <label>Neuer Tag
       <input type="date" name="date" value="${existing.has(def) ? '' : def}" required>
       <small style="color:var(--pico-muted-color)">
-        Vorhandene Tage bitte beim jeweiligen Tag über „+ Mahlzeit" ergänzen.<br>${days_hint}
+        Der Tag wird leer angelegt — Mahlzeiten fügst du danach über „+ Mahlzeit" hinzu.<br>${days_hint}
       </small>
     </label>
     <div class="form-footer">
       <button type="button" class="secondary outline" onclick="close_modal()">Abbrechen</button>
-      <button type="submit">Weiter</button>
+      <button type="submit">Tag anlegen</button>
     </div>
-  </form>`, data => {
+  </form>`, async data => {
     if (!data.date) throw new Error('Bitte ein Datum wählen.');
     if (existing.has(data.date))
-      throw new Error('Dieser Tag existiert bereits — bitte über „+ Mahlzeit" ergänzen.');
-    // open the meal editor for the new day once this dialog has closed
-    setTimeout(() => open_new_meal_for(data.date), 0);
+      throw new Error('Dieser Tag existiert bereits.');
+    await api('POST', '/api/diary-days', { date: data.date });
+    await load_meals();
   });
 }
 
@@ -2850,7 +2891,7 @@ async function open_new_meal_for(date) {
   try { recipes = await api('GET', '/api/recipes'); } catch { /* suggestions only */ }
   const import_options = meals.map(m => {
     const label = m.meal_name || (m.items[0] ? m.items[0].food_name : '?');
-    return `<option value="${m.id}">${esc(label)} (${m.date})</option>`;
+    return `<option value="${m.id}">${esc(label)} (${fmt_de(m.date)})</option>`;
   }).join('');
 
   const body = `
@@ -3227,7 +3268,7 @@ async function save_meal_edit(session_id, original_ids) {
 async function del_meal(session_id) {
   const s = meals.find(m => m.id === session_id);
   if (!s) return;
-  if (!confirm(`Mahlzeit vom ${s.date} und alle ${s.items.length} Zutat(en) löschen?`)) return;
+  if (!confirm(`Mahlzeit vom ${fmt_de(s.date)} und alle ${s.items.length} Zutat(en) löschen?`)) return;
   await api('DELETE', `/api/meals/${session_id}`);
   await load_meals();
 }
@@ -3254,15 +3295,32 @@ function copy_meal(session_id) {
   const s = meals.find(m => m.id === session_id);
   if (!s) return;
   const today = today_local();
+  const existing = [...new Set([...meals.map(m => m.date), ...empty_days])]
+    .sort((a, b) => b.localeCompare(a));
+  const list = existing.slice(0, 12).map(fmt_de).join(', ');
   open_modal('Mahlzeit kopieren', `
     <label>Datum
-      <input type="date" id="copy-date" value="${today}">
+      <input type="date" id="copy-date" value="${today}" oninput="on_copy_date_change()">
+      <small id="copy-date-note"></small>
     </label>
+    ${existing.length ? `<small style="color:var(--pico-muted-color)">Tage mit Einträgen: ${list}${existing.length > 12 ? ' …' : ''}</small>` : ''}
     <div class="form-footer">
       <button class="secondary outline" onclick="close_modal()">Abbrechen</button>
       <button onclick="do_copy_meal(${session_id})">Kopieren</button>
     </div>
   `);
+  on_copy_date_change();
+}
+
+// Warn (and outline red) when the chosen copy target already has diary entries.
+function on_copy_date_change() {
+  const inp  = document.getElementById('copy-date');
+  const note = document.getElementById('copy-date-note');
+  if (!inp || !note) return;
+  const occupied = meals.some(m => m.date === inp.value) || empty_days.includes(inp.value);
+  note.textContent = occupied ? '⚠ An diesem Tag existieren bereits Einträge.' : '';
+  note.style.color = 'var(--pico-del-color)';
+  inp.style.borderColor = occupied ? 'var(--pico-del-color)' : '';
 }
 
 async function do_copy_meal(session_id) {
@@ -3329,7 +3387,7 @@ function render_body_weight() {
     <thead><tr><th>Datum</th><th>Gewicht</th><th>Kommentar</th><th></th></tr></thead>
     <tbody>${body_weight.map(w => `
       <tr>
-        <td>${esc(w.date)}</td>
+        <td>${fmt_de(w.date)}</td>
         <td>${w.weight_kg.toFixed(1)}&thinsp;kg</td>
         <td>${w.comment ? esc(w.comment) : '&ndash;'}</td>
         <td class="row-actions">
@@ -3386,7 +3444,7 @@ function open_edit_body_weight(id) {
 
 async function del_body_weight(id) {
   const w = body_weight.find(x => x.id === id);
-  if (!w || !confirm(`Gewichts-Eintrag vom ${w.date} (${w.weight_kg} kg) löschen?`)) return;
+  if (!w || !confirm(`Gewichts-Eintrag vom ${fmt_de(w.date)} (${w.weight_kg} kg) löschen?`)) return;
   await api('DELETE', `/api/body/weight/${id}`);
   await load_body();
 }
@@ -3404,7 +3462,7 @@ function render_body_measurements() {
     <thead><tr><th>Datum</th><th>Messung</th><th>Wert</th><th></th></tr></thead>
     <tbody>${body_measures.map(m => `
       <tr>
-        <td>${esc(m.date)}</td>
+        <td>${fmt_de(m.date)}</td>
         <td>${esc(m.name)}</td>
         <td>${m.value}&thinsp;${esc(m.unit)}</td>
         <td class="row-actions">
@@ -3475,7 +3533,7 @@ function open_edit_body_measurement(id) {
 
 async function del_body_measurement(id) {
   const m = body_measures.find(x => x.id === id);
-  if (!m || !confirm(`"${m.name}" vom ${m.date} löschen?`)) return;
+  if (!m || !confirm(`"${m.name}" vom ${fmt_de(m.date)} löschen?`)) return;
   await api('DELETE', `/api/body/measurements/${id}`);
   await load_body();
 }
@@ -3493,7 +3551,7 @@ function render_body_photos() {
       <img src="/uploads/${esc(p.filename)}" alt="${esc(p.date)}" loading="lazy"
            onclick="window.open('/uploads/${esc(p.filename)}', '_blank')">
       <figcaption>
-        <span>${esc(p.date)}</span>
+        <span>${fmt_de(p.date)}</span>
         <button class="photo-del" title="Löschen" onclick="del_body_photo(${p.id})">&#10005;</button>
       </figcaption>
     </figure>`).join('');
@@ -3501,7 +3559,7 @@ function render_body_photos() {
 
 async function del_body_photo(id) {
   const p = body_photos.find(x => x.id === id);
-  if (!p || !confirm(`Foto vom ${p.date} löschen?`)) return;
+  if (!p || !confirm(`Foto vom ${fmt_de(p.date)} löschen?`)) return;
   await api('DELETE', `/api/body/photos/${id}`);
   await load_body();
 }
@@ -3665,7 +3723,7 @@ function _nutrition_daily(metric) {
   const bars = [...by.keys()].sort().map(d => {
     const v = cfg.round(by.get(d));
     return { label: `${d.slice(8, 10)}.${d.slice(5, 7)}.`, date: d, value: v,
-             title: `${d}: ${v} ${cfg.unit}` };
+             title: `${fmt_de(d)}: ${v} ${cfg.unit}` };
   });
   return { bars, unit: cfg.unit };
 }
@@ -3745,7 +3803,7 @@ function _render_range_bar() {
   const bar = document.getElementById('ana-range-bar');
   if (!bar) return;
   const eff = _effective_range();
-  const label = eff ? `${eff.min} – ${eff.max}` : 'ganzer Zeitraum';
+  const label = eff ? `${fmt_de(eff.min)} – ${fmt_de(eff.max)}` : 'ganzer Zeitraum';
   bar.innerHTML =
     `<button class="outline secondary" style="width:auto;margin:0;font-size:.8rem" onclick="open_range_picker()">📅 Zeitraum: ${label}</button>` +
     (ana_x_range ? ` <button class="outline secondary" style="width:auto;margin:0;font-size:.8rem" onclick="reset_range()">Ganzer Zeitraum</button>` : '');
@@ -3971,7 +4029,7 @@ function _volume_all_workouts(name) {
     for (const ex of s.exercises)
       if (ex.exercise_name === name) v += _exercise_volume(ex, false, wunit, mult);
     v = Math.round(v);
-    return { label: short(s.date), value: v, date: s.date, title: `${s.date}: ${v} ${unit}` };
+    return { label: short(s.date), value: v, date: s.date, title: `${fmt_de(s.date)}: ${v} ${unit}` };
   });
   return { bars, unit };
 }
@@ -4173,7 +4231,7 @@ function render_stacked_bars(el, res, caption) {
       acc += val;
       const h = Math.max(0, y0 - y1 - 2);         // 2px surface gap between segments
       return `<rect x="${x.toFixed(1)}" y="${y1.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}"
-                    fill="${s.color}" rx="2"><title>${esc(b.date)} · ${esc(s.label)}: ${val} Sätze</title></rect>`;
+                    fill="${s.color}" rx="2"><title>${fmt_de(b.date)} · ${esc(s.label)}: ${val} Sätze</title></rect>`;
     }).join('');
     const lbl = i % lbl_every === 0
       ? `<text x="${left + i * slot + slot / 2}" y="${top + ih + 22}" text-anchor="middle" class="ana-tick">${esc(b.label)}</text>` : '';
@@ -4188,7 +4246,7 @@ function render_stacked_bars(el, res, caption) {
   // Data table: exercises as columns
   const head = `<tr><th>Datum</th>${series.map(s => `<th>${esc(s.label)}</th>`).join('')}</tr>`;
   const body = bars.map(b =>
-    `<tr><td>${esc(b.date)}</td>${series.map(s => `<td>${b.segments[s.key] || 0}</td>`).join('')}</tr>`).join('');
+    `<tr><td>${fmt_de(b.date)}</td>${series.map(s => `<td>${b.segments[s.key] || 0}</td>`).join('')}</tr>`).join('');
 
   el.innerHTML = `
     <p class="chart-caption">${caption} &mdash; Einheit: <strong>${esc(unit)}</strong>, gestapelt nach Übung</p>
@@ -4313,7 +4371,7 @@ function render_line_chart(el, res, label, x_range) {
       <figure><table style="font-size:.85rem">
         <thead><tr><th>Datum</th><th>Max (${esc(unit)})</th>${single ? '' : `<th>&Oslash; (${esc(unit)})</th>`}</tr></thead>
         <tbody>${pts.map(p =>
-          `<tr><td>${esc(p.date)}</td><td>${p.max}</td>${single ? '' : `<td>${p.avg}</td>`}</tr>`).join('')}</tbody>
+          `<tr><td>${fmt_de(p.date)}</td><td>${p.max}</td>${single ? '' : `<td>${p.avg}</td>`}</tr>`).join('')}</tbody>
       </table></figure>
     </details>`;
 
@@ -4360,7 +4418,7 @@ function _attach_chart_hover(svg, px, unit, single) {
     tip.textContent = '';
     tip.appendChild(tip_row(single ? null : 'var(--ana-series)', `${single ? '' : 'Max '}${p.max} ${unit}`, true));
     if (!single) tip.appendChild(tip_row('var(--ana-series2)', `Ø ${p.avg} ${unit}`, false));
-    tip.appendChild(tip_row(null, p.date, false));
+    tip.appendChild(tip_row(null, fmt_de(p.date), false));
 
     const r  = svg.getBoundingClientRect();
     const cx = p.x  * (r.width / _ANA.W);

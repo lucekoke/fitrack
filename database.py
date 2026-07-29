@@ -86,6 +86,11 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_mitems_session ON meal_items(session_id);
 
+            -- Days the user added to the diary that don't (yet) have any meal.
+            CREATE TABLE IF NOT EXISTS diary_days (
+                date TEXT PRIMARY KEY
+            );
+
             CREATE TABLE IF NOT EXISTS processing_log (
                 id                 INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_started_at     TEXT    NOT NULL,
@@ -875,6 +880,23 @@ def delete_meal_session(session_id: int) -> None:
     with _connect() as conn:
         conn.execute("DELETE FROM meal_items WHERE session_id=?", (session_id,))
         conn.execute("DELETE FROM meal_sessions WHERE id=?", (session_id,))
+
+
+# ── Empty diary days (a day added without any meal yet) ─────────────────────
+
+def get_diary_days() -> list[str]:
+    with _connect() as conn:
+        return [r["date"] for r in conn.execute("SELECT date FROM diary_days").fetchall()]
+
+
+def add_diary_day(date: str) -> None:
+    with _connect() as conn:
+        conn.execute("INSERT OR IGNORE INTO diary_days (date) VALUES (?)", (date,))
+
+
+def delete_diary_day(date: str) -> None:
+    with _connect() as conn:
+        conn.execute("DELETE FROM diary_days WHERE date=?", (date,))
 
 
 def update_meal_item(

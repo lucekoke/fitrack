@@ -240,6 +240,29 @@ def delete_meal(session_id: int):
     return {"ok": True}
 
 
+# ── Empty diary days ───────────────────────────────────────────────────────
+
+class DiaryDayIn(BaseModel):
+    date: str
+
+
+@app.get("/api/diary-days")
+def get_diary_days():
+    return db.get_diary_days()
+
+
+@app.post("/api/diary-days", status_code=201)
+def add_diary_day(body: DiaryDayIn):
+    db.add_diary_day(body.date)
+    return {"ok": True}
+
+
+@app.delete("/api/diary-days/{date}")
+def delete_diary_day(date: str):
+    db.delete_diary_day(date)
+    return {"ok": True}
+
+
 @app.post("/api/meals/{session_id}/items", status_code=201)
 def add_meal_item(session_id: int, body: MealItemIn):
     item_id = db.insert_meal_item(
