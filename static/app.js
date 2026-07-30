@@ -865,7 +865,10 @@ async function do_copy_workout(session_id) {
   }
 }
 
-function copy_exercise(exercise_id, session_id) {
+async function copy_exercise(exercise_id, session_id) {
+  // Refetch so the target list always covers every workout, even if the global
+  // `workouts` was somehow stale when the copy button was clicked.
+  try { workouts = await api('GET', '/api/workouts'); } catch { /* fall back to cache */ }
   const s  = workouts.find(w => w.id === session_id);
   const ex = s?.exercises.find(e => e.id === exercise_id);
   if (!ex) return;
@@ -3295,32 +3298,15 @@ function copy_meal(session_id) {
   const s = meals.find(m => m.id === session_id);
   if (!s) return;
   const today = today_local();
-  const existing = [...new Set([...meals.map(m => m.date), ...empty_days])]
-    .sort((a, b) => b.localeCompare(a));
-  const list = existing.slice(0, 12).map(fmt_de).join(', ');
   open_modal('Mahlzeit kopieren', `
     <label>Datum
-      <input type="date" id="copy-date" value="${today}" oninput="on_copy_date_change()">
-      <small id="copy-date-note"></small>
+      <input type="date" id="copy-date" value="${today}" lang="de">
     </label>
-    ${existing.length ? `<small style="color:var(--pico-muted-color)">Tage mit Einträgen: ${list}${existing.length > 12 ? ' …' : ''}</small>` : ''}
     <div class="form-footer">
       <button class="secondary outline" onclick="close_modal()">Abbrechen</button>
       <button onclick="do_copy_meal(${session_id})">Kopieren</button>
     </div>
   `);
-  on_copy_date_change();
-}
-
-// Warn (and outline red) when the chosen copy target already has diary entries.
-function on_copy_date_change() {
-  const inp  = document.getElementById('copy-date');
-  const note = document.getElementById('copy-date-note');
-  if (!inp || !note) return;
-  const occupied = meals.some(m => m.date === inp.value) || empty_days.includes(inp.value);
-  note.textContent = occupied ? '⚠ An diesem Tag existieren bereits Einträge.' : '';
-  note.style.color = 'var(--pico-del-color)';
-  inp.style.borderColor = occupied ? 'var(--pico-del-color)' : '';
 }
 
 async function do_copy_meal(session_id) {
