@@ -1088,11 +1088,12 @@ def upsert_recipe(recipe_id: int | None, name: str, items: list[dict],
                   portions: float | None = None) -> int:
     """Create (recipe_id=None) or replace a recipe with the given items."""
     with _connect() as conn:
+        # Recipe names are stored exactly as entered (no auto-capitalisation).
         if recipe_id is None:
-            cur = conn.execute("INSERT INTO recipes (name, portions) VALUES (?, ?)", (_cap(name), portions))
+            cur = conn.execute("INSERT INTO recipes (name, portions) VALUES (?, ?)", (name, portions))
             rid = cur.lastrowid
         else:
-            conn.execute("UPDATE recipes SET name=?, portions=? WHERE id=?", (_cap(name), portions, recipe_id))
+            conn.execute("UPDATE recipes SET name=?, portions=? WHERE id=?", (name, portions, recipe_id))
             rid = recipe_id
         conn.execute("DELETE FROM recipe_items WHERE recipe_id=?", (rid,))
         for i, item in enumerate(items):

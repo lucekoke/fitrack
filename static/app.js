@@ -1948,6 +1948,8 @@ function render_meals() {
           <strong>${fmt_de(date)}</strong>
           <span class="day-macros">${Math.round(dk)}&thinsp;kcal &nbsp;·&nbsp; ${dp.toFixed(1)}g P &nbsp;·&nbsp; ${dc.toFixed(1)}g KH &nbsp;·&nbsp; ${df.toFixed(1)}g F</span>
           <button onclick="open_new_meal_for('${date}')">+ Mahlzeit</button>
+          <button class="outline contrast" title="Ganzen Tag löschen" style="width:auto"
+                  onclick="del_day('${date}')">&#10005;</button>
         </div>
       </header>
       <figure>
@@ -2029,6 +2031,16 @@ function _empty_day_html(date) {
 
 async function remove_empty_day(date) {
   try { await api('DELETE', `/api/diary-days/${date}`); } catch { /* ignore */ }
+  await load_meals();
+}
+
+// Delete a whole day from the diary: all its meals plus any empty-day marker.
+async function del_day(date) {
+  const ss = meals.filter(m => m.date === date);
+  const items = ss.reduce((a, s) => a + s.items.length, 0);
+  if (!confirm(`Tag ${fmt_de(date)} mit ${ss.length} Mahlzeit(en) und ${items} Zutat(en) löschen?`)) return;
+  for (const s of ss) await api('DELETE', `/api/meals/${s.id}`);
+  try { await api('DELETE', `/api/diary-days/${date}`); } catch { /* no marker */ }
   await load_meals();
 }
 
@@ -2567,6 +2579,7 @@ function _adapt_temp_recipe() {
 function update_adapt_hint() {
   const hint = document.getElementById('ra-adapt-hint');
   if (!hint) return;
+  hint.style.color = 'var(--pico-muted-color)';   // clear any inline error state
   const tmp   = _adapt_temp_recipe();
   const total = tmp.items.reduce((s, i) => s + i.amount_grams, 0);
   const mode  = document.getElementById('ra-adapt-mode').value;
@@ -2579,17 +2592,25 @@ function update_adapt_hint() {
   hint.textContent = parts.join(' · ');
 }
 
+// Show an inline error in a recipe-picker hint span (never alert() — see
+// apply_recipe_to_meal) and focus the field that needs input.
+function _ra_hint_error(hint_id, msg, focus_id) {
+  const h = document.getElementById(hint_id);
+  if (h) { h.textContent = msg; h.style.color = 'var(--pico-del-color)'; }
+  document.getElementById(focus_id)?.focus();
+}
+
 function apply_recipe_adapted() {
   const rname = document.querySelector('#modal2-body [data-recipe-name]')?.dataset.recipeName;
   const tmp   = _adapt_temp_recipe();
-  if (!tmp.items.length) { alert('Bitte mindestens eine Zutat angeben.'); return; }
+  if (!tmp.items.length) { _ra_hint_error('ra-adapt-hint', 'Bitte mindestens eine Zutat angeben.', 'ra-adapt-amount'); return; }
   const mode  = document.getElementById('ra-adapt-mode').value;
   const amt   = parseFloat(document.getElementById('ra-adapt-amount').value);
   const scale = _recipe_scale(tmp, mode, amt);
   if (scale === null) {
-    alert(mode === 'portion'
+    _ra_hint_error('ra-adapt-hint', mode === 'portion'
       ? 'Bitte Portionen eingeben (oben eine Portionenzahl hinterlegen).'
-      : 'Bitte Menge eingeben.');
+      : 'Bitte Menge eingeben.', 'ra-adapt-amount');
     return;
   }
   close_modal2();
@@ -2607,6 +2628,7 @@ function update_recipe_add_hint() {
   const sel  = document.getElementById('ra-select');
   const hint = document.getElementById('ra-hint');
   if (!sel || !hint) return;
+  hint.style.color = 'var(--pico-muted-color)';   // clear any inline error state
   const total    = parseFloat(sel.options[sel.selectedIndex]?.dataset.total) || 0;
   const portions = parseFloat(sel.options[sel.selectedIndex]?.dataset.portions) || 0;
   const mode_sel = document.getElementById('ra-mode');
@@ -2639,9 +2661,11 @@ async function apply_recipe_to_meal() {
   if (!r) return;
   const scale = _recipe_scale(r, mode, amount_in);
   if (scale === null) {
-    alert(mode === 'portion'
+    // Inline message — a blocking alert() over the nested <dialog> leaves the
+    // dialog inert in Chromium (inputs stop responding), so never alert here.
+    _ra_hint_error('ra-hint', mode === 'portion'
       ? 'Bitte Portionen eingeben (Rezept muss Portionen hinterlegt haben).'
-      : 'Bitte Menge eingeben.');
+      : 'Bitte Menge eingeben.', 'ra-amount');
     return;
   }
   close_modal2();
