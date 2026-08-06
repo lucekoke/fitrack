@@ -118,7 +118,7 @@ def init_db() -> None:
         _migrate_add_body_tables(conn)
         _migrate_add_food_v2(conn)
         _migrate_add_settings(conn)
-        _migrate_food_category(conn)
+        _migrate_food_estimated(conn)
         _migrate_round_nutrition(conn)
         _migrate_clear_stray_weight_unit(conn)
     log.debug("Database schema ready at %s", config.DB_PATH)
@@ -139,27 +139,30 @@ def _migrate_clear_stray_weight_unit(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def _migrate_food_category(conn: sqlite3.Connection) -> None:
-    """Consolidate energy_density + focus into a single category label.
+def _migrate_food_estimated(conn: sqlite3.Connection) -> None:
+    """Replace the four-way `category` label with a single `estimated` flag.
 
-    Categories: 'standard' (precise entry), 'kalorien' (energy-dense, calories
-    matter), 'protein' (tracked as protein source), 'nebenbei' (low energy
-    density — rough estimate is fine, macros de-emphasised in the UI).
+    Only one of the old categories carried behaviour: 'nebenbei' (low calorie
+    density — a rough estimate is fine). That becomes estimated=1; the other
+    labels were purely decorative and are dropped along with the column.
+
+    Dropping is best-effort: on an SQLite too old for DROP COLUMN the legacy
+    columns simply stay behind unused. They all have defaults, so writes that
+    ignore them keep working and nothing breaks.
     """
     cols = {r[1] for r in conn.execute("PRAGMA table_info(foods)").fetchall()}
-    if "category" not in cols:
-        conn.execute("ALTER TABLE foods ADD COLUMN category TEXT NOT NULL DEFAULT 'standard'")
-        if "energy_density" in cols:
-            conn.execute("""
-                UPDATE foods SET category = CASE
-                    WHEN energy_density = 'gering'      THEN 'nebenbei'
-                    WHEN focus = 'protein'              THEN 'protein'
-                    WHEN focus IN ('kcal', 'beides')    THEN 'kalorien'
-                    ELSE 'standard' END
-            """)
-    if "energy_density" in cols:
-        conn.execute("ALTER TABLE foods DROP COLUMN energy_density")
-        conn.execute("ALTER TABLE foods DROP COLUMN focus")
+    if "estimated" not in cols:
+        conn.execute("ALTER TABLE foods ADD COLUMN estimated INTEGER NOT NULL DEFAULT 0")
+        if "category" in cols:
+            conn.execute("UPDATE foods SET estimated = 1 WHERE category = 'nebenbei'")
+        elif "energy_density" in cols:      # even older schema
+            conn.execute("UPDATE foods SET estimated = 1 WHERE energy_density = 'gering'")
+    for dead in ("category", "energy_density", "focus"):
+        if dead in cols:
+            try:
+                conn.execute(f"ALTER TABLE foods DROP COLUMN {dead}")
+            except sqlite3.OperationalError:
+                log.warning("Could not drop foods.%s — left in place, unused", dead)
     conn.commit()
 
 
@@ -174,9 +177,8 @@ def _migrate_add_food_v2(conn: sqlite3.Connection) -> None:
     if "unit_weight_unit" not in foods_cols:
         # Whether unit_grams is labelled as g or ml (both stored 1:1); display only.
         conn.execute("ALTER TABLE foods ADD COLUMN unit_weight_unit TEXT")
-    if "energy_density" not in foods_cols:
-        conn.execute("ALTER TABLE foods ADD COLUMN energy_density TEXT NOT NULL DEFAULT 'hoch'")
-        conn.execute("ALTER TABLE foods ADD COLUMN focus TEXT")                # 'kcal' | 'protein' | 'beides' | NULL
+    # NOTE: energy_density/focus are NOT (re-)created here — they were folded
+    # into `estimated` by _migrate_food_estimated, which drops them.
     item_cols = {r[1] for r in conn.execute("PRAGMA table_info(meal_items)").fetchall()}
     if "amount_units" not in item_cols:
         conn.execute("ALTER TABLE meal_items ADD COLUMN amount_units REAL")    # e.g. 2 (× Stk.)
@@ -531,7 +533,7 @@ def get_all_foods() -> list[dict]:
     with _connect() as conn:
         rows = conn.execute(
             "SELECT id, name, kcal_per_100g, protein_per_100g, carbs_per_100g, fat_per_100g, "
-            "unit_name, unit_grams, unit_weight_unit, category FROM foods ORDER BY name"
+            "unit_name, unit_grams, unit_weight_unit, estimated FROM foods ORDER BY name"
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -543,14 +545,14 @@ def _cap(s: str) -> str:
 
 def upsert_food(name: str, kcal: float, protein: float, carbs: float, fat: float,
                 unit_name: str | None = None, unit_grams: float | None = None,
-                category: str | None = None, unit_weight_unit: str | None = None) -> int:
+                estimated: bool | None = None, unit_weight_unit: str | None = None) -> int:
     name = _cap(name)
     now = _now()
     with _connect() as conn:
         conn.execute("""
             INSERT INTO foods (name, kcal_per_100g, protein_per_100g, carbs_per_100g, fat_per_100g,
-                               unit_name, unit_grams, unit_weight_unit, category, created_at, last_used_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'standard'), ?, ?)
+                               unit_name, unit_grams, unit_weight_unit, estimated, created_at, last_used_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 0), ?, ?)
             ON CONFLICT(name) DO UPDATE SET
                 kcal_per_100g    = excluded.kcal_per_100g,
                 protein_per_100g = excluded.protein_per_100g,
@@ -563,25 +565,25 @@ def upsert_food(name: str, kcal: float, protein: float, carbs: float, fat: float
                 unit_weight_unit = COALESCE(excluded.unit_weight_unit, foods.unit_weight_unit),
                 last_used_at     = excluded.last_used_at
         """, (name, kcal, protein, carbs, fat,
-              unit_name, unit_grams, unit_weight_unit, category, now, now))
-        if category is not None:
-            conn.execute("UPDATE foods SET category=? WHERE LOWER(name)=LOWER(?)", (category, name))
+              unit_name, unit_grams, unit_weight_unit, estimated, now, now))
+        if estimated is not None:
+            conn.execute("UPDATE foods SET estimated=? WHERE LOWER(name)=LOWER(?)", (int(estimated), name))
         row = conn.execute("SELECT id FROM foods WHERE LOWER(name)=LOWER(?)", (name,)).fetchone()
     return row["id"]
 
 
 def update_food(food_id: int, name: str, kcal: float, protein: float, carbs: float, fat: float,
                 unit_name: str | None = None, unit_grams: float | None = None,
-                category: str = "standard", unit_weight_unit: str | None = None) -> None:
+                estimated: bool = False, unit_weight_unit: str | None = None) -> None:
     cap_name = _cap(name)
     with _connect() as conn:
         old = conn.execute("SELECT name FROM foods WHERE id=?", (food_id,)).fetchone()
         old_name = old["name"] if old else cap_name
         conn.execute(
             "UPDATE foods SET name=?, kcal_per_100g=?, protein_per_100g=?, carbs_per_100g=?, fat_per_100g=?, "
-            "unit_name=?, unit_grams=?, unit_weight_unit=?, category=? WHERE id=?",
+            "unit_name=?, unit_grams=?, unit_weight_unit=?, estimated=? WHERE id=?",
             (cap_name, kcal, protein, carbs, fat,
-             unit_name, unit_grams, unit_weight_unit, category, food_id),
+             unit_name, unit_grams, unit_weight_unit, int(estimated), food_id),
         )
         # Diary entries are immutable snapshots: editing a food's nutrition or
         # name must NOT retroactively change already-logged meal_items — only

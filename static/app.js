@@ -2321,15 +2321,8 @@ function render_foods_db() {
     return;
   }
   const sorted = [...foods_db].sort((a, b) => a.name.localeCompare(b.name));
-  const category_badge = f => {
-    if (!f.category || f.category === 'standard') return '';
-    const cfg = {
-      kalorien: { label: 'K', title: 'Kalorienfokus',                          cls: 'match' },
-      protein:  { label: 'P', title: 'Proteinquelle',                          cls: 'match' },
-      nebenbei: { label: '≈', title: 'Nebenbei — grobe Schätzung reicht',      cls: 'skip'  },
-    }[f.category];
-    return cfg ? ` <span class="food-badge ${cfg.cls}" title="${cfg.title}">${cfg.label}</span>` : '';
-  };
+  const estimated_badge = f => f.estimated
+    ? ' <span class="food-badge skip" title="geringe Kalorien — geschätzt">≈</span>' : '';
   el.innerHTML = add_btn + `<figure><table>
     <thead><tr>
       <th>Lebensmittel</th><th>Basis</th><th>kcal</th><th>Eiweiß</th><th>KH</th><th>Fett</th><th></th>
@@ -2347,7 +2340,7 @@ function render_foods_db() {
         : `100 ${esc(f.unit_name || 'g')}`;
       return `
       <tr>
-        <td>${esc(f.name)}${category_badge(f)}</td>
+        <td>${esc(f.name)}${estimated_badge(f)}</td>
         <td style="white-space:nowrap">${basis}</td>
         <td>${r_kcal(f.kcal_per_100g * fac)}</td>
         <td>${r_nut(f.protein_per_100g * fac)}g</td>
@@ -2982,13 +2975,13 @@ function _food_modal_body(f) {
         </select>
       </span>
     </label>
-    <label>Kategorie
-      <select name="category" onchange="on_category_change(this)">
-        <option value="standard" ${!f || !f.category || f.category === 'standard' ? 'selected' : ''}>Standard — genaue Angaben</option>
-        <option value="kalorien" ${f && f.category === 'kalorien' ? 'selected' : ''}>Kalorienfokus — energiedicht, Kalorien zählen</option>
-        <option value="protein"  ${f && f.category === 'protein'  ? 'selected' : ''}>Proteinquelle — Eiweißbedarf decken</option>
-        <option value="nebenbei" ${f && f.category === 'nebenbei' ? 'selected' : ''}>Nebenbei — geringe Energiedichte, Schätzung reicht</option>
-      </select>
+    <label style="margin-bottom:.75rem">
+      <input type="checkbox" name="estimated" ${f && f.estimated ? 'checked' : ''}
+             onchange="on_estimated_change(this)">
+      geringe Kalorien &ndash; geschätzt
+      <small style="display:block;color:var(--pico-muted-color)">
+        Nährwerte dürfen grob oder leer bleiben.
+      </small>
     </label>
     <div class="grid">
       <label>kcal<input type="number" name="kcal" step="any" value="${kcal}" required></label>
@@ -3030,15 +3023,16 @@ function update_per_g_label() {
   }
 }
 
-// "Nebenbei" (low energy density) → exact macros don't matter; dim the fields
-// as a visual cue but keep them fully editable — rough values are welcome.
-function on_category_change(sel) {
-  const form     = sel.closest('form');
-  const nebenbei = sel.value === 'nebenbei';
+// "geringe Kalorien – geschätzt": exact macros don't matter. The fields are
+// dimmed as a visual cue and may be left empty (missing values save as 0).
+// Unticked, all four stay `required`, so the browser warns on an empty field.
+function on_estimated_change(cb) {
+  const form = cb.closest('form');
   ['kcal', 'protein', 'carbs', 'fat'].forEach(n => {
     const inp = form.querySelector(`[name="${n}"]`);
-    if (nebenbei && inp.value === '') inp.value = 0;   // satisfy `required`
-    inp.classList.toggle('macro-dim', nebenbei);
+    if (!inp) return;
+    inp.required = !cb.checked;
+    inp.classList.toggle('macro-dim', cb.checked);
   });
 }
 
@@ -3074,13 +3068,13 @@ function _food_macros_from_form(data) {
     unit_name,
     unit_grams,
     unit_weight_unit: weight_unit,
-    category:         data.category || 'standard',
+    estimated:        !!data.estimated,
   };
 }
 
 function _init_density_state() {
-  const sel = document.querySelector('#modal-body [name="category"]');
-  if (sel) on_category_change(sel);
+  const cb = document.querySelector('#modal-body [name="estimated"]');
+  if (cb) on_estimated_change(cb);
 }
 
 function open_new_food() {
