@@ -2975,14 +2975,14 @@ function _food_modal_body(f) {
         </select>
       </span>
     </label>
-    <label style="margin-bottom:.75rem">
+    <label style="margin:0;display:inline-flex;align-items:center;gap:.4rem">
       <input type="checkbox" name="estimated" ${f && f.estimated ? 'checked' : ''}
              onchange="on_estimated_change(this)">
       geringe Kalorien &ndash; geschätzt
-      <small style="display:block;color:var(--pico-muted-color)">
-        Nährwerte dürfen grob oder leer bleiben.
-      </small>
     </label>
+    <small style="display:block;margin:0 0 1rem;color:var(--pico-muted-color)">
+      Nährwerte dürfen grob oder leer bleiben.
+    </small>
     <div class="grid">
       <label>kcal<input type="number" name="kcal" step="any" value="${kcal}" required></label>
       <label>Eiweiß (g)<input type="number" name="protein" step="any" value="${protein}" required></label>
