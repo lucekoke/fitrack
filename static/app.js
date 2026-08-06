@@ -611,6 +611,8 @@ function _workout_card(s) {
         </span>
         <div>
           <button class="outline secondary" title="Kopieren" onclick="copy_workout(${s.id})">&#10064;</button>
+          <button class="outline secondary" title="Als Text exportieren"
+                  onclick="open_export_text('workout',${s.id})">&#128203;</button>
           <button class="outline secondary" onclick="open_edit_workout(${s.id})">Bearbeiten</button>
           <button class="outline contrast"  onclick="del_workout(${s.id})">Löschen</button>
         </div>
@@ -1570,28 +1572,230 @@ async function load_plans() {
   render_plans();
 }
 
-// e.g. "Arme - 2×8 Trizepsdrücken Kabelzug @15, 10 lbs pro Seite"
-function _plan_item_summary(i) {
-  const group = _exercise_meta(i.exercise_name)?.muscle_group;
-  const prefix = group ? `${esc(group)} - ` : '';
+// ─── Text export (copy-paste, e.g. to WhatsApp) ────────────────────────────
+// One line, PLAIN text (escaped only where it is rendered):
+//   "Arme - 2×8 Trizepsdrücken Kabelzug @15, 10 lbs pro Seite"
+function _export_item_line(i) {
+  const group  = _exercise_meta(i.exercise_name)?.muscle_group;
+  const prefix = group ? `${group} - ` : '';
+  const hold   = i.duration_s ? ` ${fmt_hold_times(i.duration_s)}` : '';
   const w = i.weight_str
     ? ` @${i.weight_str} ${i.weight_unit}${_is_per_hand(i.exercise_name) ? ' pro Seite' : ''}` : '';
-  return `${prefix}${i.sets}×${i.reps_str} ${esc(i.exercise_name)}${w}`;
+  return `${prefix}${i.sets}×${i.reps_str} ${i.exercise_name}${hold}${w}`;
 }
 
-// Collapsible Ausführungshinweise for the plan overview: hidden by default,
-// each hint line becomes a sub-bullet. The toggle is an icon-only span (its
-// triangle is a CSS ::before, never part of the text), so a copy-paste of the
-// expanded plan contains only the exercise lines + the visible bullets — no
-// "Hinweise" label and no <details> chevron.
-function _plan_hints_details(name) {
+// Ausführungshinweise of an exercise as plain lines (one per sub-bullet).
+function _export_hint_lines(name) {
   const m = _exercise_meta(name);
-  if (!m || !m.hints) return '';
-  const bullets = m.hints.split('\n').map(l => l.trim()).filter(Boolean)
-    .map(l => `<li>${linkify(l)}</li>`).join('');
-  return `<span class="plan-hint-toggle" title="Hinweise ein-/ausblenden"
-            onclick="this.closest('li').classList.toggle('hint-open')"></span>` +
-         `<ul class="plan-hint-list">${bullets}</ul>`;
+  if (!m || !m.hints) return [];
+  return m.hints.split('\n').map(l => l.trim()).filter(Boolean);
+}
+
+// A logged workout exercise reshaped like a plan item, so both export
+// identically through _export_item_line().
+function _wx_as_plan_item(ex) {
+  const unit = pick_weight_unit(ex);
+  const raw  = unit === 'lbs' ? ex.weight_lbs : ex.weight_kg;
+  return {
+    exercise_name: ex.exercise_name,
+    sets:          ex.sets,
+    reps_str:      reps_to_input(ex.reps_per_set),
+    weight_str:    raw ? weight_to_input(raw) : '',
+    weight_unit:   unit,
+    duration_s:    _is_isometric_ex(ex.exercise_name) ? ex.duration_s : null,
+  };
+}
+
+let _export_data       = null;    // { title, items } currently shown in the popup
+let _export_show_hints = false;   // hints are OFF by default — the copy stays clean
+
+function open_export_text(kind, id) {
+  if (kind === 'plan') {
+    const p = training_plans.find(x => x.id === id);
+    if (!p) return;
+    _export_data = { title: p.name, items: p.items };
+  } else {
+    const s = workouts.find(w => w.id === id);
+    if (!s) return;
+    _export_data = {
+      title: `Kraft ${fmt_de(s.date)}${s.comment ? ' — ' + s.comment : ''}`,
+      items: s.exercises.map(_wx_as_plan_item),
+    };
+  }
+  _export_show_hints = false;
+  open_modal('Zum Kopieren', `
+    <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.7rem">
+      <button type="button" class="secondary outline" id="exp-hints-btn"
+              style="width:auto;margin:0;font-size:.85rem" onclick="toggle_export_hints()">
+        Hinweise anzeigen
+      </button>
+      <button type="button" class="secondary outline" id="exp-copy-btn"
+              style="width:auto;margin:0;font-size:.85rem" onclick="copy_export_text()">
+        Kopieren
+      </button>
+    </div>
+    <div id="export-text" class="export-text"></div>
+    <div class="form-footer">
+      <button type="button" onclick="close_modal()">Schließen</button>
+    </div>
+  `);
+  render_export_text();
+}
+
+function render_export_text() {
+  const el = document.getElementById('export-text');
+  if (!el || !_export_data) return;
+  const rows = _export_data.items.map(i => {
+    const hints = _export_show_hints ? _export_hint_lines(i.exercise_name) : [];
+    const sub = hints.length
+      ? `<ul class="export-hints">${hints.map(h => `<li>${linkify(h)}</li>`).join('')}</ul>` : '';
+    return `<li>${esc(_export_item_line(i))}${sub}</li>`;
+  }).join('');
+  el.innerHTML = `<strong>${esc(_export_data.title)}</strong>
+    <ul class="recipe-ingredients">${rows || '<li>leer</li>'}</ul>`;
+}
+
+function toggle_export_hints() {
+  _export_show_hints = !_export_show_hints;
+  const btn = document.getElementById('exp-hints-btn');
+  if (btn) btn.textContent = _export_show_hints ? 'Hinweise ausblenden' : 'Hinweise anzeigen';
+  render_export_text();
+}
+
+// Same text as shown, as plain lines — what lands in the clipboard.
+function _export_plain_text() {
+  if (!_export_data) return '';
+  const lines = [_export_data.title];
+  for (const i of _export_data.items) {
+    lines.push('• ' + _export_item_line(i));
+    if (_export_show_hints)
+      for (const h of _export_hint_lines(i.exercise_name)) lines.push('   - ' + h);
+  }
+  return lines.join('\n');
+}
+
+async function copy_export_text() {
+  const btn  = document.getElementById('exp-copy-btn');
+  const done = msg => {
+    if (!btn) return;
+    btn.textContent = msg;
+    setTimeout(() => { btn.textContent = 'Kopieren'; }, 2000);
+  };
+  try {
+    await navigator.clipboard.writeText(_export_plain_text());
+    done('✓ Kopiert');
+    return;
+  } catch { /* no clipboard permission (or insecure context) → select instead */ }
+  // Fallback that works everywhere: select the block so Strg+C copies it.
+  const el = document.getElementById('export-text');
+  if (!el) { done('Kopieren fehlgeschlagen'); return; }
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+  done('markiert → Strg+C');
+}
+
+// Weight cell for a plan row, mirroring fmt_weight() in the workout table.
+function _plan_weight_html(i) {
+  if (!i.weight_str) return 'BW';
+  const hand = _is_per_hand(i.exercise_name) ? ' <small>pro Seite</small>' : '';
+  return `${esc(i.weight_str)}&thinsp;${esc(i.weight_unit || 'kg')}${hand}`;
+}
+
+// A training plan is shown exactly like a logged workout: same card, same
+// header layout, same table columns. Hints stay behind the "?" button.
+function _plan_card(p) {
+  return `
+  <article>
+    <header>
+      <div class="session-header">
+        <span>
+          <span class="activity-badge badge-workout">📋 Plan</span>
+          <strong>${esc(p.name)}</strong>
+          <small style="margin-left:.5rem;color:var(--pico-muted-color)">
+            (${p.items.length} Übung${p.items.length !== 1 ? 'en' : ''})
+          </small>
+        </span>
+        <div>
+          <button class="outline secondary" title="Als Text exportieren"
+                  onclick="open_export_text('plan',${p.id})">&#128203;</button>
+          <button class="outline secondary" onclick="open_edit_plan(${p.id})">Bearbeiten</button>
+          <button class="outline contrast"  onclick="del_plan(${p.id})">Löschen</button>
+        </div>
+      </div>
+    </header>
+
+    ${p.items.length ? `
+    <figure>
+      <table>
+        <thead>
+          <tr><th></th><th>Übung</th><th>Sätze</th><th>Reps</th><th>Gewicht</th><th>Gruppe</th><th></th></tr>
+        </thead>
+        <tbody>
+          ${p.items.map((i, idx) => `
+          <tr>
+            <td class="reorder-col">
+              <button class="reorder-btn" title="Nach oben"
+                      ${idx === 0 ? 'disabled' : ''}
+                      onclick="move_plan_item(${p.id}, ${idx}, -1)">▲</button>
+              <button class="reorder-btn" title="Nach unten"
+                      ${idx === p.items.length - 1 ? 'disabled' : ''}
+                      onclick="move_plan_item(${p.id}, ${idx}, 1)">▼</button>
+            </td>
+            <td>${esc(i.exercise_name)} ${_hints_btn(i.exercise_name)}</td>
+            <td>${i.sets}</td>
+            <td>${esc(i.reps_str)}</td>
+            <td>${_plan_weight_html(i)}</td>
+            ${_ex_group_muscle_cells(i.exercise_name)}
+            <td class="row-actions">
+              <button class="outline secondary" title="Bearbeiten"
+                      onclick="open_edit_plan(${p.id})">&#9998;</button>
+              <button class="outline contrast" title="Aus Plan entfernen"
+                      onclick="del_plan_item(${p.id}, ${idx})">&#10005;</button>
+            </td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </figure>` : `<p class="empty">Noch keine Übungen.</p>`}
+
+    <footer>
+      <button class="secondary outline" onclick="open_edit_plan(${p.id})">+ Übung hinzufügen</button>
+    </footer>
+  </article>`;
+}
+
+// The plan API replaces all items at once, so the per-row reorder/delete
+// buttons mutate the local list and save the whole plan back.
+async function _save_plan_items(p) {
+  await api('PUT', `/api/plans/${p.id}`, {
+    name:  p.name,
+    items: p.items.map(i => ({
+      exercise_name: i.exercise_name,
+      sets:          i.sets,
+      reps_str:      i.reps_str,
+      weight_str:    i.weight_str || null,
+      weight_unit:   i.weight_unit,
+    })),
+  });
+  await load_plans();
+}
+
+async function move_plan_item(plan_id, idx, dir) {
+  const p = training_plans.find(x => x.id === plan_id);
+  const j = idx + dir;
+  if (!p || j < 0 || j >= p.items.length) return;
+  [p.items[idx], p.items[j]] = [p.items[j], p.items[idx]];
+  await _save_plan_items(p);
+}
+
+async function del_plan_item(plan_id, idx) {
+  const p = training_plans.find(x => x.id === plan_id);
+  if (!p || !p.items[idx]) return;
+  if (!confirm(`"${p.items[idx].exercise_name}" aus dem Plan entfernen?`)) return;
+  p.items.splice(idx, 1);
+  await _save_plan_items(p);
 }
 
 function render_plans() {
@@ -1604,24 +1808,7 @@ function render_plans() {
     el.innerHTML = add_btn + '<p class="empty">Noch keine Trainingspläne vorhanden.</p>';
     return;
   }
-  el.innerHTML = add_btn + `<figure><table>
-    <thead><tr><th>Name</th><th>Übungen</th><th></th></tr></thead>
-    <tbody>${training_plans.map(p => `
-      <tr>
-        <td>
-          <details class="recipe-details">
-            <summary><strong>${esc(p.name)}</strong></summary>
-            <ul class="recipe-ingredients">${p.items.map(i => `<li>${_plan_item_summary(i)}${_plan_hints_details(i.exercise_name)}</li>`).join('') || '<li>leer</li>'}</ul>
-          </details>
-        </td>
-        <td>${p.items.length}</td>
-        <td class="row-actions">
-          <button class="outline secondary" onclick="open_edit_plan(${p.id})">&#9998;</button>
-          <button class="outline contrast"  onclick="del_plan(${p.id})">&#10005;</button>
-        </td>
-      </tr>`).join('')}
-    </tbody>
-  </table></figure>`;
+  el.innerHTML = add_btn + training_plans.map(_plan_card).join('');
 }
 
 function _plan_item_row_html(i = null) {

@@ -344,28 +344,25 @@ input.macro-dim {
   border-radius: 50%;
 }
 
-/* ── Collapsible exercise hints in the plan overview ──
-   Custom toggle (no <details>, so Pico's accordion chevron can't interfere).
-   The triangle is a ::before pseudo-element — never part of the copied text. */
-.plan-hint-toggle {
-  display: inline-block;
-  cursor: pointer;
-  margin-left: .4rem;
-  color: var(--pico-muted-color);
-  user-select: none;
-  vertical-align: baseline;
+/* ── Text export popup (copy-paste, e.g. to WhatsApp) ──
+   Plain selectable text only: no toggles, no chevrons — whatever is visible
+   here is exactly what ends up in the clipboard. Hints are opt-in sub-bullets. */
+.export-text {
+  user-select: text;
+  padding: .6rem .75rem;
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+  background: var(--pico-card-sectioning-background-color);
+  max-height: 55vh;
+  overflow-y: auto;
 }
-.plan-hint-toggle::before { content: '▸'; font-size: .75rem; }
-li.hint-open > .plan-hint-toggle::before { content: '▾'; }
-.plan-hint-list {
-  display: none;
+.export-hints {
   margin: .15rem 0 .3rem 0;
   padding-left: 1rem;
   font-size: .8rem;
   color: var(--pico-muted-color);
 }
-li.hint-open > .plan-hint-list { display: block; }
-.plan-hint-list li { margin: 0; }
+.export-hints li { margin: 0; }
 
 /* ── Chart caption (visible axis/unit label) ── */
 .chart-caption {
