@@ -2577,7 +2577,9 @@ function _recipe_modal_body(r) {
     return _recipe_item_row_html(
       i.food_name,
       in_units ? i.amount_units : i.amount_grams,
-      in_units ? i.unit_name : null,
+      // A stored gram/ml amount keeps ITS unit — never the food's serving unit,
+      // or "40 g Apfel" would silently re-read as "40 Stk.".
+      in_units ? i.unit_name : _food_canonical_unit(_food_lookup(i.food_name)),
       onetime,
       _recipe_item_macros(i, i.amount_grams || 0));
   }).join('') : '';
@@ -2749,7 +2751,9 @@ function open_recipe_adapt() {
   const rows = r.items.map(i => _recipe_item_row_html(
     i.food_name,
     (i.unit_name && i.amount_units != null) ? i.amount_units : i.amount_grams,
-    (i.unit_name && i.amount_units != null) ? i.unit_name : null)).join('');
+    (i.unit_name && i.amount_units != null)
+      ? i.unit_name
+      : _food_canonical_unit(_food_lookup(i.food_name)))).join('');
   const portions = r.portions != null ? +r.portions : '';
   open_modal2('Rezept anpassen: ' + r.name, `<div data-recipe-name="${esc(r.name)}">
     <p style="font-size:.85rem;color:var(--pico-muted-color)">
@@ -3473,7 +3477,7 @@ async function open_edit_meal(session_id) {
             return _item_row_html(i.id, i.food_name,
               in_units ? i.amount_units : (i.amount_grams ?? ''),
               i.kcal, i.protein_g, i.carbs_g, i.fat_g, per100, !food,
-              in_units ? i.unit_name : null);
+              in_units ? i.unit_name : _food_canonical_unit(food));
           }).join('')}
         </tbody>
       </table>
