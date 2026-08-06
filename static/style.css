@@ -69,21 +69,6 @@ article footer button {
   font-size: .85rem;
 }
 
-/* ── Sync log ── */
-#sync-log {
-  display: none;
-  margin-top: 1rem;
-  padding: 1rem;
-  background: var(--pico-code-background-color);
-  border-radius: var(--pico-border-radius);
-  min-height: 120px;
-  max-height: 420px;
-  overflow-y: auto;
-  font-size: .85rem;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
 /* ── Modal ── */
 dialog article {
   width: min(700px, 94vw);

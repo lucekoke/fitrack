@@ -25,7 +25,6 @@ Optional: `.env` mit `DB_PATH=…` (Default: `fitrack.db`).
 - **Rezepte** — wiederverwendbare Zutatenkombinationen, portionsweise in Mahlzeiten übernehmbar; Zutaten direkt in der Übersicht aufklappbar.
 - **Körper** — Gewicht, Maße und Fortschrittsfotos per Drag & Drop.
 - **Analyse** — Verlaufsdiagramme (Stufenlinie mit Punkten je Datum): Übungsgewicht (Max und Ø über Sätze, in Original-Einheit) oder Körpergewicht.
-- **Sync** — Lebensmittel, Rezepte und Übungen über einen gemeinsamen Ordner (z. B. OneDrive) mit anderen teilen; Tagebuch, Workouts und Körperdaten bleiben privat.
 
 ## Struktur
 

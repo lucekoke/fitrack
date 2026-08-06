@@ -395,6 +395,30 @@ function on_ex_name_change(input) {
   update_exercise_history(input.value);
   const box = document.getElementById('ex-duration-box');
   if (box) box.style.display = _exercise_meta(input.value)?.is_isometric ? 'block' : 'none';
+  _prefill_from_last_entry(input);
+}
+
+// Picking a known exercise prefills Sätze/Reps/Gewicht from the last time it
+// was logged (same as the plan editor). Only empty fields are touched, so
+// editing an existing entry never clobbers what is already there.
+function _prefill_from_last_entry(input) {
+  const form = input.closest('form');
+  if (!form) return;
+  const last = _last_workout_entry(input.value);
+  if (!last) return;
+  const fill = (name, val) => {
+    const f = form.querySelector(`[name="${name}"]`);
+    if (!f || f.value || val == null || val === '') return false;
+    f.value = val;
+    return true;
+  };
+  fill('sets', last.sets);
+  fill('reps_str', last.reps_str);
+  // Only adopt the unit when the weight itself was prefilled.
+  if (fill('weight_str', last.weight_str)) {
+    const unit = form.querySelector('[name="weight_unit"]');
+    if (unit) unit.value = last.unit;
+  }
 }
 
 // Personal history of one exercise: when it was done and with which weights.
@@ -836,17 +860,21 @@ function copy_workout(session_id) {
 
 // Build the exercise POST payload preserving the unit the weights were
 // originally entered in (otherwise a kg round-trip makes lbs values uneven).
+// The per-exercise comment is deliberately NOT copied — it describes that one
+// session ("letzter Satz abgebrochen"), not the exercise itself.
 function _exercise_copy_payload(ex) {
   const unit = pick_weight_unit(ex);
   const raw  = unit === 'lbs' ? ex.weight_lbs : ex.weight_kg;
   const w    = raw ? JSON.parse(raw) : null;
+  const dur  = ex.duration_s ? JSON.parse(ex.duration_s) : null;
   return {
     exercise_name: ex.exercise_name,
     sets:          ex.sets,
     reps_str:      JSON.parse(ex.reps_per_set).join(','),
     weight_str:    w ? w.join(',') : null,
     weight_unit:   unit,
-    comment:       ex.comment || null,
+    duration_str:  dur ? dur.map(v => v == null ? '' : v).join(',') : null,
+    comment:       null,
   };
 }
 
@@ -1046,6 +1074,72 @@ function do_export_workouts() {
   const fname = range === 'range'
     ? `workouts_${from}_bis_${to}.csv`
     : 'workouts_alle.csv';
+  _download(fname, csv, 'text/csv;charset=utf-8');
+  close_modal();
+}
+
+// ─── Food diary CSV export (same mechanism as the workout export) ──────────
+
+function open_export_meals() {
+  if (!meals.length) { alert('Noch keine Mahlzeiten zum Exportieren vorhanden.'); return; }
+  const dates = meals.map(m => m.date).sort();
+  const min = dates[0], max = dates[dates.length - 1];
+  open_modal('Ernährungs-Tagebuch exportieren', `
+    <fieldset>
+      <label><input type="radio" name="exp-range" value="all" checked onchange="_toggle_export_dates()"> Gesamtes Tagebuch</label>
+      <label><input type="radio" name="exp-range" value="range" onchange="_toggle_export_dates()"> Zeitraum</label>
+    </fieldset>
+    <div id="exp-dates" hidden class="grid">
+      <label>Von<input type="date" id="exp-from" value="${min}"></label>
+      <label>Bis<input type="date" id="exp-to"   value="${max}"></label>
+    </div>
+    <div class="form-footer">
+      <button type="button" class="secondary outline" onclick="close_modal()">Abbrechen</button>
+      <button type="button" onclick="do_export_meals()">Als CSV herunterladen</button>
+    </div>
+  `);
+}
+
+function do_export_meals() {
+  const range = document.querySelector('input[name="exp-range"]:checked').value;
+  let list = [...meals];
+  let from = '', to = '';
+  if (range === 'range') {
+    from = document.getElementById('exp-from').value;
+    to   = document.getElementById('exp-to').value;
+    if (!from || !to) { alert('Bitte Von- und Bis-Datum wählen.'); return; }
+    if (from > to) [from, to] = [to, from];
+    list = list.filter(m => m.date >= from && m.date <= to);
+  }
+  if (!list.length) { alert('Keine Mahlzeiten im gewählten Zeitraum.'); return; }
+  list.sort((a, b) => a.date.localeCompare(b.date) || a.id - b.id);
+
+  const rows = [[
+    'Datum', 'Mahlzeit', 'Zutat', 'Menge (g)', 'Menge', 'Einheit',
+    'kcal', 'Eiweiß (g)', 'KH (g)', 'Fett (g)', 'Kommentar',
+  ]];
+  for (const m of list) {
+    const label = m.meal_name || (m.items[0] ? m.items[0].food_name : '');
+    if (!m.items.length) {
+      rows.push([m.date, label, '', '', '', '', '', '', '', '', m.comment || '']);
+      continue;
+    }
+    for (const it of m.items) {
+      rows.push([
+        m.date, label, it.food_name,
+        it.amount_grams ?? '',
+        it.amount_units ?? '',
+        it.unit_name || '',
+        r_kcal(it.kcal), r_nut(it.protein_g), r_nut(it.carbs_g), r_nut(it.fat_g),
+        it.comment || '',
+      ]);
+    }
+  }
+  // Leading BOM so Excel reads UTF-8 (umlauts) correctly.
+  const csv = '﻿' + rows.map(r => r.map(_csv_cell).join(',')).join('\r\n');
+  const fname = range === 'range'
+    ? `ernaehrung_${from}_bis_${to}.csv`
+    : 'ernaehrung_alle.csv';
   _download(fname, csv, 'text/csv;charset=utf-8');
   close_modal();
 }
@@ -1286,12 +1380,11 @@ function on_food_name_change(input) {
     if (food.unit_name) row.dataset.unitName = food.unit_name;
     else delete row.dataset.unitName;
     if (unit_sel) {
-      // Default the row to the food's own serving unit — for a drink sold by
-      // the can, "1 Dose/Glas" is the natural entry, not "473 g". Only auto-pick
-      // while the unit is still the untouched default; once the user changes it
-      // manually (unitManual) we leave their choice alone.
-      const auto = row.dataset.unitManual !== '1' && unit_sel.value === 'g' && food.unit_name;
-      unit_sel.innerHTML = _unit_options_html(food, auto ? food.unit_name : unit_sel.value);
+      // Offer only this food's units and default to its own serving unit — for
+      // a drink sold by the can "1 Dose/Glas" is the natural entry, not "473 g".
+      // Once the user picks a unit by hand (unitManual) that choice is kept.
+      const keep = row.dataset.unitManual === '1' ? unit_sel.value : null;
+      unit_sel.innerHTML = _unit_options_html(food, keep);
     }
     if (badge) { badge.className = 'food-badge match'; badge.textContent = '✓'; }
     _set_macros_readonly(row, true);
@@ -1977,6 +2070,7 @@ function switch_meals_tab(btn) {
   document.getElementById('meals-subtab-recipes').hidden = (tab !== 'recipes');
   document.getElementById('meals-add-btn').hidden        = (tab !== 'diary');
   document.getElementById('meals-targets-btn').hidden    = (tab !== 'diary');
+  document.getElementById('meals-export-btn').hidden     = (tab !== 'diary');
   if (tab === 'foods')   load_foods_db();
   if (tab === 'recipes') load_recipes();
 }
@@ -2013,66 +2107,6 @@ function open_targets_modal() {
   });
 }
 
-// ─── Catalog sync via shared folder (e.g. OneDrive) ───────────────────────
-
-function open_sync_modal() {
-  open_modal('Katalog-Sync', `<form>
-    <p style="font-size:.9rem;color:var(--pico-muted-color);margin-bottom:.75rem">
-      Teilt <strong>Lebensmittel und Rezepte</strong> über einen gemeinsamen
-      Ordner (z.B. OneDrive/Dropbox). Übungen, Workouts, Tagebuch und Körperdaten
-      bleiben privat. Fehlende Einträge werden übernommen, bestehende nie überschrieben.
-    </p>
-    <label>Pfad zum gemeinsamen Ordner
-      <input type="text" name="sync_dir" value="${esc(settings.sync_dir || '')}"
-             placeholder="z.B. C:\\Users\\du\\OneDrive\\fitrack-shared">
-      <small style="color:var(--pico-muted-color)">Leer lassen, solange noch kein Ordner eingerichtet ist.</small>
-    </label>
-    <div id="sync-result" style="font-size:.9rem;margin:.5rem 0"></div>
-    <div class="form-footer">
-      <button type="button" class="secondary outline" onclick="close_modal()">Schließen</button>
-      <button type="button" class="secondary" style="width:auto"
-              onclick="run_catalog_sync(true)">Speichern &amp; jetzt synchronisieren</button>
-    </div>
-  </form>`, null);
-}
-
-async function run_catalog_sync(from_modal = false) {
-  if (from_modal) {
-    const dir = document.querySelector('#modal-body [name="sync_dir"]').value.trim();
-    await api('PUT', '/api/settings', { sync_dir: dir || null });
-    await load_settings();
-    if (!dir) {
-      document.getElementById('sync-result').textContent = 'Kein Ordner konfiguriert — Pfad gespeichert (leer).';
-      return;
-    }
-  }
-  const res = await api('POST', '/api/sync/run');
-  const out = document.getElementById('sync-result');
-  if (!res.ok) {
-    if (out) { out.textContent = '⚠ ' + res.error; out.style.color = 'var(--pico-del-color)'; }
-    return res;
-  }
-  const a = res.added;
-  const summary = `✓ Sync ok — übernommen: ${a.foods} Lebensmittel, ${a.recipes} Rezept(e)`
-    + `${res.peers.length ? ` (von: ${res.peers.join(', ')})` : ' (noch keine Partner-Datei)'}`;
-  if (out) { out.textContent = summary; out.style.color = 'inherit'; }
-  if (a.foods || a.recipes) {
-    await load_foods_db();
-    recipes = await api('GET', '/api/recipes');
-    render_recipes();
-  }
-  return res;
-}
-
-// Silent auto-sync on startup when a shared folder is configured — the whole
-// point is that neither user has to think about it.
-async function auto_sync_on_start() {
-  try {
-    const st = await api('GET', '/api/sync/status');
-    if (st.dir_exists) await run_catalog_sync(false);
-  } catch (e) { console.warn('Auto-Sync übersprungen:', e.message); }
-}
-
 // Soll/Ist balance row for one day.
 // Colors by relative deviation from the target: within ±5% green, within
 // ±15% orange, outside red. Protein: anything ABOVE target is always green
@@ -2104,10 +2138,33 @@ function _target_row_html(dk, dp) {
   return `<tr class="target-row">
     <td></td>
     <td>Bilanz (Soll)</td>
+    <td></td>
     <td>${kcal_cell}</td>
     <td>${prot_cell}</td>
     <td></td><td></td><td></td>
   </tr>`;
+}
+
+// Amount of one ingredient, shown in the unit it was entered in ("2 Stk.",
+// "250 ml", "85 g"); blank when no amount was recorded.
+function _item_amount_label(i) {
+  if (i.unit_name && i.amount_units != null)
+    return `${_fmt_amount(i.amount_units)} ${esc(i.unit_name)}`;
+  if (i.amount_grams != null) return `${_fmt_amount(i.amount_grams)} g`;
+  return '';
+}
+
+// Amount of a whole meal: a single-ingredient meal shows that ingredient's own
+// amount, a multi-ingredient one the summed weight (the only comparable unit).
+function _meal_amount_label(s) {
+  if (s.items.length === 1) return _item_amount_label(s.items[0]);
+  const g = s.items.reduce((a, i) => a + (i.amount_grams || 0), 0);
+  return g > 0 ? `${_fmt_amount(g)} g` : '';
+}
+
+function _fmt_amount(v) {
+  const n = Number(v) || 0;
+  return Number.isInteger(n) ? String(n) : String(Math.round(n * 10) / 10);
 }
 
 function render_meals() {
@@ -2141,7 +2198,7 @@ function render_meals() {
       </header>
       <figure>
         <table>
-          <thead><tr><th></th><th>Mahlzeit</th><th>kcal</th><th>Eiweiß</th><th>KH</th><th>Fett</th><th></th></tr></thead>
+          <thead><tr><th></th><th>Mahlzeit</th><th>Menge</th><th>kcal</th><th>Eiweiß</th><th>KH</th><th>Fett</th><th></th></tr></thead>
           <tbody>${ss.map((s, idx) => {
             const tk = s.items.reduce((a, i) => a + i.kcal,      0);
             const tp = s.items.reduce((a, i) => a + i.protein_g, 0);
@@ -2158,6 +2215,7 @@ function render_meals() {
               <tr class="meal-detail" data-parent="${s.id}" hidden>
                 <td></td>
                 <td style="padding-left:1.6rem;color:var(--pico-muted-color)">${esc(i.food_name)}</td>
+                <td style="color:var(--pico-muted-color);white-space:nowrap">${_item_amount_label(i)}</td>
                 <td>${Math.round(i.kcal)}</td>
                 <td>${i.protein_g.toFixed(1)}g</td>
                 <td>${i.carbs_g.toFixed(1)}g</td>
@@ -2173,6 +2231,7 @@ function render_meals() {
                 <button class="reorder-btn" title="Nach unten" ${idx === ss.length - 1 ? 'disabled' : ''} onclick="move_meal_in_day(${s.id},'${date}', 1)">▼</button>
               </td>
               <td>${name_cell}</td>
+              <td style="white-space:nowrap">${_meal_amount_label(s)}</td>
               <td>${Math.round(tk)}</td>
               <td>${tp.toFixed(1)}g</td>
               <td>${tc.toFixed(1)}g</td>
@@ -2187,6 +2246,7 @@ function render_meals() {
           <tfoot><tr>
             <td></td>
             <td><strong>Gesamt</strong></td>
+            <td></td>
             <td><strong>${Math.round(dk)}</strong></td>
             <td><strong>${dp.toFixed(1)}g</strong></td>
             <td><strong>${dc.toFixed(1)}g</strong></td>
@@ -2399,7 +2459,7 @@ function _recipe_item_macros(item, grams) {
 // When the name matches a catalog food the macros are auto-computed & read-only;
 // a one-time ingredient (not in the catalog) has editable macros stored on the
 // recipe. `macros` prefills the four fields; `onetime` forces manual entry.
-function _recipe_item_row_html(food_name = '', amount = '', unit = 'g', onetime = false, macros = null) {
+function _recipe_item_row_html(food_name = '', amount = '', unit = null, onetime = false, macros = null) {
   const food = (!onetime && food_name) ? _food_lookup(food_name) : null;
   const un   = (food && food.unit_name)  ? ` data-unit-name="${esc(food.unit_name)}"` : '';
   const ug   = (food && food.unit_grams) ? ` data-unit-grams="${food.unit_grams}"` : '';
@@ -2468,8 +2528,8 @@ function on_recipe_food_change(input) {
     if (food.unit_grams) row.dataset.unitGrams = food.unit_grams; else delete row.dataset.unitGrams;
     if (food.unit_name)  row.dataset.unitName  = food.unit_name;  else delete row.dataset.unitName;
     if (sel) {
-      const auto = row.dataset.unitManual !== '1' && sel.value === 'g' && food.unit_name;
-      sel.innerHTML = _unit_options_html(food, auto ? food.unit_name : sel.value);
+      const keep = row.dataset.unitManual === '1' ? sel.value : null;
+      sel.innerHTML = _unit_options_html(food, keep);
     }
     _recipe_set_macros_readonly(row, true);
     _recipe_recalc(row);
@@ -2524,7 +2584,7 @@ function _recipe_modal_body(r) {
     return _recipe_item_row_html(
       i.food_name,
       in_units ? i.amount_units : i.amount_grams,
-      in_units ? i.unit_name : 'g',
+      in_units ? i.unit_name : null,
       onetime,
       _recipe_item_macros(i, i.amount_grams || 0));
   }).join('') : '';
@@ -2696,7 +2756,7 @@ function open_recipe_adapt() {
   const rows = r.items.map(i => _recipe_item_row_html(
     i.food_name,
     (i.unit_name && i.amount_units != null) ? i.amount_units : i.amount_grams,
-    (i.unit_name && i.amount_units != null) ? i.unit_name : 'g')).join('');
+    (i.unit_name && i.amount_units != null) ? i.unit_name : null)).join('');
   const portions = r.portions != null ? +r.portions : '';
   open_modal2('Rezept anpassen: ' + r.name, `<div data-recipe-name="${esc(r.name)}">
     <p style="font-size:.85rem;color:var(--pico-muted-color)">
@@ -2992,7 +3052,7 @@ function _food_macros_from_form(data) {
     const x = parseFloat(data.per_g) || 100;
     factor  = 100 / x;
     if (unit === 'ml') { unit_name = 'ml'; unit_grams = 1; }
-    weight_unit = 'ml';
+    weight_unit = unit;          // g stays g — never stamp 'ml' on a gram food
   } else {
     // Macros were entered per X units. If the unit weight is unknown we
     // normalise against a virtual 100 g per unit — meal entries in this unit
@@ -3189,15 +3249,42 @@ function update_meal_name_placeholder() {
   inp.placeholder = derived || 'wird automatisch aus den Zutaten gebildet';
 }
 
-// Unit <select> options for an ingredient row: grams and millilitres are always
-// available (both stored 1:1 as the canonical grams), plus the food's own
-// serving unit if it has one. A unit already stored on the row (e.g. a legacy
-// value) is kept selectable.
-function _unit_options_html(food, selected = 'g') {
-  const units = ['g', 'ml'];
-  if (food && food.unit_name && !units.includes(food.unit_name)) units.push(food.unit_name);
+// A food is measured either in grams or in millilitres — never both. Which one
+// applies follows from how the food was defined: an "ml" food, or a named unit
+// whose size was given in ml, is a millilitre food; everything else is grams.
+function _food_canonical_unit(food) {
+  if (!food) return 'g';
+  if (food.unit_name === 'ml') return 'ml';                 // defined per 100 ml
+  // unit_weight_unit describes the size of a NAMED unit ("1 Dose = 540 ml"),
+  // so it only matters when such a unit exists.
+  if (_food_named_unit(food) && food.unit_weight_unit === 'ml') return 'ml';
+  return 'g';
+}
+
+// The food's own serving unit (Stk., Dose/Glas, …), or null if it has none.
+function _food_named_unit(food) {
+  const u = food && food.unit_name;
+  return (u && !_is_canonical_unit(u)) ? u : null;
+}
+
+// Default unit for an ingredient row: the food's own serving unit when it has
+// one (a can of beans is naturally counted in cans), otherwise its canonical
+// measure.
+function _default_unit_for(food) {
+  return _food_named_unit(food) || _food_canonical_unit(food);
+}
+
+// Unit <select> options for an ingredient row: ONLY the units that apply to
+// this food — its canonical measure (g or ml, mutually exclusive) plus its own
+// serving unit if defined. A unit already stored on the row is kept selectable
+// so an existing entry never silently loses its value.
+function _unit_options_html(food, selected = null) {
+  const units = [_food_canonical_unit(food)];
+  const named = _food_named_unit(food);
+  if (named) units.push(named);
   if (selected && !units.includes(selected)) units.push(selected);
-  return units.map(u => `<option value="${esc(u)}" ${u === selected ? 'selected' : ''}>${esc(u)}</option>`).join('');
+  const sel = selected || _default_unit_for(food);
+  return units.map(u => `<option value="${esc(u)}" ${u === sel ? 'selected' : ''}>${esc(u)}</option>`).join('');
 }
 
 // Amount of a row in grams. Only 'g' and the food's OWN serving unit convert
@@ -3228,7 +3315,7 @@ function on_unit_change(sel) {
   }
 }
 
-function _item_row_html(item_id, food_name = '', amount = '', kcal = '', protein = '', carbs = '', fat = '', per100 = null, skip_db = false, unit = 'g') {
+function _item_row_html(item_id, food_name = '', amount = '', kcal = '', protein = '', carbs = '', fat = '', per100 = null, skip_db = false, unit = null) {
   // Keep field values at the display precision so step-constrained inputs accept them.
   const _rv = (v, f) => (v === '' || v == null) ? '' : f(v);
   kcal = _rv(kcal, r_kcal); protein = _rv(protein, r_nut); carbs = _rv(carbs, r_nut); fat = _rv(fat, r_nut);
@@ -3392,7 +3479,7 @@ async function open_edit_meal(session_id) {
             return _item_row_html(i.id, i.food_name,
               in_units ? i.amount_units : (i.amount_grams ?? ''),
               i.kcal, i.protein_g, i.carbs_g, i.fat_g, per100, !food,
-              in_units ? i.unit_name : 'g');
+              in_units ? i.unit_name : null);
           }).join('')}
         </tbody>
       </table>
@@ -4633,7 +4720,7 @@ function _attach_chart_hover(svg, px, unit, single) {
 load_workouts();
 load_endurance();
 load_sports();
-load_settings().then(load_meals).then(auto_sync_on_start);   // targets before rendering; sync after
+load_settings().then(load_meals);   // targets before rendering
 load_exercise_catalog();
 _init_photo_dropzone();
 // foods_db / body / analysis data loaded on demand when their tab is opened

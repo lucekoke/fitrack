@@ -120,7 +120,23 @@ def init_db() -> None:
         _migrate_add_settings(conn)
         _migrate_food_category(conn)
         _migrate_round_nutrition(conn)
+        _migrate_clear_stray_weight_unit(conn)
     log.debug("Database schema ready at %s", config.DB_PATH)
+
+
+def _migrate_clear_stray_weight_unit(conn: sqlite3.Connection) -> None:
+    """unit_weight_unit describes the size of a NAMED serving unit ("1 Dose =
+    540 ml"). An earlier build also stamped it on plain g/ml foods, which made
+    them look like millilitre foods. Clear it wherever no named unit exists."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(foods)").fetchall()}
+    if "unit_weight_unit" not in cols:
+        return
+    conn.execute(
+        "UPDATE foods SET unit_weight_unit = NULL "
+        "WHERE unit_weight_unit IS NOT NULL "
+        "  AND (unit_name IS NULL OR unit_name IN ('g', 'ml'))"
+    )
+    conn.commit()
 
 
 def _migrate_food_category(conn: sqlite3.Connection) -> None:
@@ -1238,49 +1254,6 @@ def delete_training_plan(plan_id: int) -> None:
     with _connect() as conn:
         conn.execute("DELETE FROM training_plan_items WHERE plan_id=?", (plan_id,))
         conn.execute("DELETE FROM training_plans WHERE id=?", (plan_id,))
-
-
-# ── Catalog sync (shared folder) ───────────────────────────────────────────
-# Shared between users: foods and recipes ONLY. Exercises, plans and all
-# diaries stay local/personal.
-
-def get_catalogs_export() -> dict:
-    return {
-        "exported_at": _now(),
-        "foods":   get_all_foods(),
-        "recipes": get_all_recipes(),
-    }
-
-
-def merge_catalogs(data: dict) -> dict:
-    """Merge a peer's catalog export into the local DB.
-
-    Conservative rules: entries missing locally are added; existing local
-    entries are never overwritten (no clobbering hand-tuned values).
-    Deletions are not propagated. Exercises in old peer files are ignored."""
-    added = {"foods": 0, "recipes": 0}
-
-    for f in data.get("foods", []):
-        if not f.get("name"):
-            continue
-        if get_food_by_name(f["name"]) is None:
-            upsert_food(
-                f["name"], f.get("kcal_per_100g", 0), f.get("protein_per_100g", 0),
-                f.get("carbs_per_100g", 0), f.get("fat_per_100g", 0),
-                f.get("unit_name"), f.get("unit_grams"), f.get("category", "standard"),
-            )
-            added["foods"] += 1
-
-    local_recipes = {r["name"].lower() for r in get_all_recipes()}
-    for r in data.get("recipes", []):
-        if not r.get("name") or r["name"].lower() in local_recipes:
-            continue
-        items = [{"food_name": i["food_name"], "amount_grams": i["amount_grams"]}
-                 for i in r.get("items", []) if i.get("food_name")]
-        upsert_recipe(None, r["name"], items)
-        added["recipes"] += 1
-
-    return added
 
 
 # ── helpers ────────────────────────────────────────────────────────────────

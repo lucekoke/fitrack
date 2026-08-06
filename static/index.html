@@ -19,8 +19,6 @@
         <li><a href="#" class="tab-link" data-tab="body">Körper</a></li>
         <li><a href="#" class="tab-link" data-tab="analysis">Analyse</a></li>
         <li><a href="#" class="tab-link" data-tab="coach">AI Coach</a></li>
-        <li><a href="#" id="sync-nav-link" title="Kataloge über gemeinsamen Ordner teilen"
-               onclick="open_sync_modal(); return false;">&#8646; Sync</a></li>
       </ul>
     </nav>
   </header>
@@ -59,6 +57,7 @@
         <div style="display:flex; gap:.5rem">
           <button id="meals-targets-btn" class="outline secondary" onclick="open_targets_modal()"
                   title="Tagesziele (kcal-Limit, Protein-Soll)">&#9881; Ziele</button>
+          <button id="meals-export-btn" class="outline secondary" onclick="open_export_meals()">&#8681; Export</button>
           <button id="meals-add-btn" onclick="open_add_day()">+ Tag hinzufügen</button>
         </div>
       </div>
@@ -157,6 +156,6 @@
     </article>
   </dialog>
 
-  <script src="/static/app.js?v=64"></script>
+  <script src="/static/app.js?v=66"></script>
 </body>
 </html>
