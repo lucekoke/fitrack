@@ -3349,15 +3349,22 @@ function _item_row_html(item_id, food_name = '', amount = '', kcal = '', protein
   </tr>`;
 }
 
+// Every caller that supplies a food name (recipe import, meal import) passes
+// the amount in GRAMS, so the row must be labelled with the food's canonical
+// measure — not its serving unit, or "49 g Möhre" would read as "49 Stk.".
+// A blank row keeps no unit: the serving-unit default is applied by
+// on_food_name_change once the user actually types a food.
 function add_em_item_row(food_name = '', amount = '', kcal = '', protein = '', carbs = '', fat = '') {
-  const per100 = food_name ? _food_lookup(food_name) && {
-    kcal:    _food_lookup(food_name).kcal_per_100g,
-    protein: _food_lookup(food_name).protein_per_100g,
-    carbs:   _food_lookup(food_name).carbs_per_100g,
-    fat:     _food_lookup(food_name).fat_per_100g,
+  const food   = food_name ? _food_lookup(food_name) : null;
+  const per100 = food ? {
+    kcal:    food.kcal_per_100g,
+    protein: food.protein_per_100g,
+    carbs:   food.carbs_per_100g,
+    fat:     food.fat_per_100g,
   } : null;
+  const unit = food_name ? _food_canonical_unit(food) : null;
   const tbody = document.getElementById('em-items');
-  tbody.insertAdjacentHTML('beforeend', _item_row_html('new', food_name, amount, kcal, protein, carbs, fat, per100));
+  tbody.insertAdjacentHTML('beforeend', _item_row_html('new', food_name, amount, kcal, protein, carbs, fat, per100, false, unit));
   const row = tbody.lastElementChild;
   if (!food_name) row.querySelector('input').focus();
   update_meal_name_placeholder();
