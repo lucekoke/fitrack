@@ -512,3 +512,22 @@ tr[draggable="true"] { cursor: default; }
   color: var(--pico-primary);
 }
 tr.meal-detail td, tr.recipe-detail td { font-size: .85rem; }
+
+/* ── "einmalig" toggle on an ingredient row ──
+   Auto-ticks for a food the catalog doesn't know; ticked means the food is
+   used for this meal only and never enters the Lebensmitteldatenbank. */
+.einmalig-lbl {
+  display: inline-flex;
+  align-items: center;
+  gap: .25rem;
+  margin: 0 0 0 .4rem;
+  font-size: .7rem;
+  color: var(--pico-muted-color);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.einmalig-lbl input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+  vertical-align: middle;
+}

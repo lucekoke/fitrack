@@ -1093,6 +1093,12 @@ function open_export_meals() {
       <label>Von<input type="date" id="exp-from" value="${min}"></label>
       <label>Bis<input type="date" id="exp-to"   value="${max}"></label>
     </div>
+    <fieldset style="margin-top:.75rem">
+      <legend style="font-size:.9rem;font-weight:600">Umfang</legend>
+      <label><input type="radio" name="exp-level" value="items" checked> Alle Zutaten &mdash; eine Zeile je Zutat</label>
+      <label><input type="radio" name="exp-level" value="meals"> Nur Mahlzeiten &mdash; eine Zeile je Mahlzeit</label>
+      <label><input type="radio" name="exp-level" value="days"> Tagesübersicht &mdash; eine Zeile je Tag</label>
+    </fieldset>
     <div class="form-footer">
       <button type="button" class="secondary outline" onclick="close_modal()">Abbrechen</button>
       <button type="button" onclick="do_export_meals()">Als CSV herunterladen</button>
@@ -1114,32 +1120,69 @@ function do_export_meals() {
   if (!list.length) { alert('Keine Mahlzeiten im gewählten Zeitraum.'); return; }
   list.sort((a, b) => a.date.localeCompare(b.date) || a.id - b.id);
 
-  const rows = [[
-    'Datum', 'Mahlzeit', 'Zutat', 'Menge (g)', 'Menge', 'Einheit',
-    'kcal', 'Eiweiß (g)', 'KH (g)', 'Fett (g)', 'Kommentar',
-  ]];
-  for (const m of list) {
-    const label = m.meal_name || (m.items[0] ? m.items[0].food_name : '');
-    if (!m.items.length) {
-      rows.push([m.date, label, '', '', '', '', '', '', '', '', m.comment || '']);
-      continue;
+  const level = document.querySelector('input[name="exp-level"]:checked')?.value || 'items';
+  const meal_label = m => m.meal_name || (m.items[0] ? m.items[0].food_name : '');
+  const sum = (arr, f) => arr.reduce((a, x) => a + (f(x) || 0), 0);
+  const macro_cells = arr => [
+    r_kcal(sum(arr, x => x.kcal)), r_nut(sum(arr, x => x.protein_g)),
+    r_nut(sum(arr, x => x.carbs_g)), r_nut(sum(arr, x => x.fat_g)),
+  ];
+
+  let rows;
+  if (level === 'days') {
+    // One row per day: that day's totals, nothing else.
+    rows = [['Datum', 'Mahlzeiten', 'Menge (g)', 'kcal', 'Eiweiß (g)', 'KH (g)', 'Fett (g)']];
+    const by_date = new Map();
+    for (const m of list) {
+      if (!by_date.has(m.date)) by_date.set(m.date, []);
+      by_date.get(m.date).push(m);
     }
-    for (const it of m.items) {
+    for (const date of [...by_date.keys()].sort()) {
+      const day   = by_date.get(date);
+      const items = day.flatMap(m => m.items);
+      rows.push([date, day.length, r_nut(sum(items, i => i.amount_grams)), ...macro_cells(items)]);
+    }
+  } else if (level === 'meals') {
+    // One row per meal: its totals, ingredients not broken out.
+    rows = [['Datum', 'Mahlzeit', 'Zutaten', 'Menge (g)', 'kcal', 'Eiweiß (g)', 'KH (g)', 'Fett (g)', 'Kommentar']];
+    for (const m of list) {
       rows.push([
-        m.date, label, it.food_name,
-        it.amount_grams ?? '',
-        it.amount_units ?? '',
-        it.unit_name || '',
-        r_kcal(it.kcal), r_nut(it.protein_g), r_nut(it.carbs_g), r_nut(it.fat_g),
-        it.comment || '',
+        m.date, meal_label(m), m.items.length,
+        r_nut(sum(m.items, i => i.amount_grams)),
+        ...macro_cells(m.items),
+        m.comment || '',
       ]);
+    }
+  } else {
+    // Full export: one row per ingredient.
+    rows = [[
+      'Datum', 'Mahlzeit', 'Zutat', 'Menge (g)', 'Menge', 'Einheit',
+      'kcal', 'Eiweiß (g)', 'KH (g)', 'Fett (g)', 'Kommentar',
+    ]];
+    for (const m of list) {
+      const label = meal_label(m);
+      if (!m.items.length) {
+        rows.push([m.date, label, '', '', '', '', '', '', '', '', m.comment || '']);
+        continue;
+      }
+      for (const it of m.items) {
+        rows.push([
+          m.date, label, it.food_name,
+          it.amount_grams ?? '',
+          it.amount_units ?? '',
+          it.unit_name || '',
+          r_kcal(it.kcal), r_nut(it.protein_g), r_nut(it.carbs_g), r_nut(it.fat_g),
+          it.comment || '',
+        ]);
+      }
     }
   }
   // Leading BOM so Excel reads UTF-8 (umlauts) correctly.
   const csv = '﻿' + rows.map(r => r.map(_csv_cell).join(',')).join('\r\n');
+  const suffix = { items: 'zutaten', meals: 'mahlzeiten', days: 'tage' }[level];
   const fname = range === 'range'
-    ? `ernaehrung_${from}_bis_${to}.csv`
-    : 'ernaehrung_alle.csv';
+    ? `ernaehrung_${suffix}_${from}_bis_${to}.csv`
+    : `ernaehrung_${suffix}_alle.csv`;
   _download(fname, csv, 'text/csv;charset=utf-8');
   close_modal();
 }
@@ -1366,10 +1409,10 @@ function on_food_name_change(input) {
   const row   = input.closest('tr');
   const badge = row.querySelector('.food-badge');
   const unit_sel = row.querySelector('[name="unit"]');
-  const add_lbl  = row.querySelector('.add-to-db-lbl');
-  // The "In Datenbank speichern" checkbox only makes sense for a typed name
-  // that isn't already in the catalog.
-  if (add_lbl) add_lbl.style.display = (!food && input.value.trim()) ? 'block' : 'none';
+  // "einmalig" ticks itself for a food the catalog doesn't know, and clears
+  // again once a known one is picked — unless the user set it by hand.
+  const once = row.querySelector('[name="einmalig"]');
+  if (once && row.dataset.einmaligManual !== '1') once.checked = !food && !!input.value.trim();
   if (food) {
     row.dataset.per100kcal    = food.kcal_per_100g;
     row.dataset.per100protein = food.protein_per_100g;
@@ -1388,6 +1431,13 @@ function on_food_name_change(input) {
     }
     if (badge) { badge.className = 'food-badge match'; badge.textContent = '✓'; }
     _set_macros_readonly(row, true);
+    // A serving unit is counted, not weighed — "1 Stk." is the obvious start.
+    // Only for a food typed in by hand: rows filled from a recipe or a copied
+    // meal never reach this handler, so their amounts stay untouched.
+    const amt_inp = row.querySelector('[name="amount_grams"]');
+    if (amt_inp && !amt_inp.value && unit_sel && !_is_canonical_unit(unit_sel.value)) {
+      amt_inp.value = 1;
+    }
     const g = _row_grams(row);
     if (!isNaN(g) && g > 0) _recalc_macros(row, g);
   } else {
@@ -1436,7 +1486,7 @@ function _recalc_macros(row, amount_grams) {
 // into the row (manual/one-off items, non-convertible units) are used.
 function _row_macros_for_save(row) {
   const name = row.querySelector('[name="food_name"]').value.trim();
-  const food = row.dataset.skipDb === 'true' ? null : _food_lookup(name);
+  const food = _food_lookup(name);
   const g    = _row_grams(row);
   const read = n => { const v = row.querySelector(`[name="${n}"]`).value; return v ? parseFloat(v) : 0; };
   if (food && !isNaN(g) && g > 0) {
@@ -1455,11 +1505,13 @@ function _row_macros_for_save(row) {
 // always kept out; a name already in the catalog is unaffected; a new (unknown)
 // name is kept out unless the user ticked "In Datenbank speichern".
 function _row_skip_db(row) {
-  if (row.dataset.skipDb === 'true') return true;
-  const name = row.querySelector('[name="food_name"]').value.trim();
-  if (_food_lookup(name)) return false;               // already known → nothing to add
-  const chk = row.querySelector('[name="add_to_db"]');
-  return !(chk && chk.checked);                        // new food: default = don't add
+  const once = row.querySelector('[name="einmalig"]');
+  return !!(once && once.checked);
+}
+
+// Ticking "einmalig" by hand pins it, so retyping the food name won't undo it.
+function on_einmalig_change(cb) {
+  cb.closest('tr').dataset.einmaligManual = '1';
 }
 
 function switch_acts_tab(btn) {
@@ -3207,9 +3259,6 @@ async function open_new_meal_for(date) {
       <button type="button" class="secondary outline"
               style="width:auto;font-size:.85rem;margin:0"
               onclick="add_em_item_row()">+ Zutat</button>
-      <button type="button" class="secondary outline"
-              style="width:auto;font-size:.85rem;margin:0"
-              onclick="add_em_skip_row()" title="Einmalige Zutat — nicht in Lebensmitteldatenbank speichern und nicht daraus vorschlagen">+ Einmalig</button>
     </div>
     <hr style="margin:.25rem 0 .75rem">
     <label style="margin-bottom:.5rem">Name <small style="color:var(--pico-muted-color)">(optional)</small>
@@ -3223,6 +3272,7 @@ async function open_new_meal_for(date) {
     </div>`;
 
   open_modal('Neue Mahlzeit', body, null);
+  add_em_item_row();   // start with an empty Lebensmittel row, ready to type
 }
 
 // Auto-derived meal name (edits.txt #10): a recipe import uses the recipe name;
@@ -3321,18 +3371,18 @@ function _item_row_html(item_id, food_name = '', amount = '', kcal = '', protein
   const pa   = per100 ? ` data-per100kcal="${per100.kcal}" data-per100protein="${per100.protein}" data-per100carbs="${per100.carbs}" data-per100fat="${per100.fat}"` : '';
   const ug   = (food && food.unit_grams) ? ` data-unit-grams="${food.unit_grams}"` : '';
   const un   = (food && food.unit_name)  ? ` data-unit-name="${esc(food.unit_name)}"` : '';
-  const skip_attr  = skip_db ? ' data-skip-db="true"' : '';
-  const is_new     = !skip_db && !!food_name && !food;   // typed name not in the catalog
-  const badge_cls  = skip_db ? 'skip' : (per100 ? 'match' : (food_name ? 'new' : ''));
-  const badge_text = skip_db ? 'einmalig' : (per100 ? '✓' : (food_name ? 'neu' : ''));
-  return `<tr data-item-id="${item_id}"${pa}${ug}${un}${skip_attr}>
+  const badge_cls  = food ? 'match' : (food_name ? 'new' : '');
+  const badge_text = food ? '✓'     : (food_name ? 'neu' : '');
+  return `<tr data-item-id="${item_id}"${pa}${ug}${un}>
     <td style="white-space:nowrap">
       <input type="text" name="food_name" value="${esc(food_name)}" placeholder="Lebensmittel"
-             ${skip_db ? 'oninput="update_meal_name_placeholder()"' : 'list="foods-datalist" oninput="on_food_name_change(this)" onchange="on_food_name_change(this)"'}
+             list="foods-datalist" oninput="on_food_name_change(this)" onchange="on_food_name_change(this)"
              style="margin:0;min-width:8rem;display:inline-block;width:auto">
       <span class="food-badge ${badge_cls}">${badge_text}</span>
-      ${skip_db ? '' : `<label class="add-to-db-lbl" style="display:${is_new ? 'block' : 'none'};font-size:.7rem;color:var(--pico-muted-color);white-space:nowrap;margin:.15rem 0 0">
-        <input type="checkbox" name="add_to_db" style="width:auto;margin:0 .3rem 0 0;vertical-align:middle">In Datenbank speichern</label>`}
+      <label class="einmalig-lbl" title="Nur für diese Mahlzeit — nicht in die Lebensmitteldatenbank aufnehmen">
+        <input type="checkbox" name="einmalig" ${skip_db ? 'checked' : ''}
+               onchange="on_einmalig_change(this)">einmalig
+      </label>
     </td>
     <td style="white-space:nowrap">
       <input type="number" name="amount_grams" value="${amount}" step="any" min="0" placeholder="Menge"
@@ -3367,13 +3417,6 @@ function add_em_item_row(food_name = '', amount = '', kcal = '', protein = '', c
   tbody.insertAdjacentHTML('beforeend', _item_row_html('new', food_name, amount, kcal, protein, carbs, fat, per100, false, unit));
   const row = tbody.lastElementChild;
   if (!food_name) row.querySelector('input').focus();
-  update_meal_name_placeholder();
-}
-
-function add_em_skip_row() {
-  const tbody = document.getElementById('em-items');
-  tbody.insertAdjacentHTML('beforeend', _item_row_html('new', '', '', '', '', '', '', null, true));
-  tbody.lastElementChild.querySelector('input').focus();
   update_meal_name_placeholder();
 }
 
@@ -3496,9 +3539,6 @@ async function open_edit_meal(session_id) {
       <button type="button" class="secondary outline"
               style="width:auto;font-size:.85rem;margin:0"
               onclick="open_add_recipe_to_meal()">+ Rezept</button>
-      <button type="button" class="secondary outline"
-              style="width:auto;font-size:.85rem;margin:0"
-              onclick="add_em_skip_row()" title="Einmalige Mahlzeit — nicht in Lebensmitteldatenbank speichern">+ Einmalig</button>
     </div>
     <div class="form-footer">
       <button type="button" class="secondary outline" onclick="close_modal()">Abbrechen</button>
