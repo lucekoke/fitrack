@@ -258,7 +258,8 @@ header nav a.tab-link.active {
   color: #92400e;
 }
 
-/* ── Read-only macro inputs (DB-matched ingredient) ── */
+/* ── Read-only macro inputs (still used by the recipe editor; meal rows show
+   the green ✓ badge instead) ── */
 input.macro-auto {
   background: var(--pico-muted-border-color) !important;
   color: var(--pico-muted-color) !important;
@@ -513,21 +514,24 @@ tr[draggable="true"] { cursor: default; }
 }
 tr.meal-detail td, tr.recipe-detail td { font-size: .85rem; }
 
-/* ── "einmalig" toggle on an ingredient row ──
-   Auto-ticks for a food the catalog doesn't know; ticked means the food is
-   used for this meal only and never enters the Lebensmitteldatenbank. */
-.einmalig-lbl {
-  display: inline-flex;
-  align-items: center;
-  gap: .25rem;
-  margin: 0 0 0 .4rem;
+/* ── "+ DB" on an ingredient row ──
+   Only shown for a typed food the catalog doesn't know; adds it as a proper
+   Lebensmittel using that row's own numbers. */
+.add-food-btn {
+  margin: 0 0 0 .3rem;
+  padding: .05rem .35rem;
+  width: auto;
   font-size: .7rem;
-  color: var(--pico-muted-color);
-  white-space: nowrap;
+  line-height: 1.5;
+  vertical-align: middle;
+  border: 1px solid var(--pico-primary);
+  background: none;
+  color: var(--pico-primary);
+  border-radius: var(--pico-border-radius);
   cursor: pointer;
 }
-.einmalig-lbl input[type="checkbox"] {
-  width: auto;
-  margin: 0;
-  vertical-align: middle;
+.add-food-btn:hover:not(:disabled) {
+  background: var(--pico-primary);
+  color: var(--pico-primary-inverse, #fff);
 }
+.add-food-btn:disabled { opacity: .5; cursor: default; }

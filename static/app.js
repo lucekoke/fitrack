@@ -1400,7 +1400,6 @@ function _set_macros_readonly(row, readonly) {
     const inp = row.querySelector(`[name="${name}"]`);
     if (!inp) return;
     inp.readOnly = readonly;
-    inp.classList.toggle('macro-auto', readonly);
   });
 }
 
@@ -1409,10 +1408,9 @@ function on_food_name_change(input) {
   const row   = input.closest('tr');
   const badge = row.querySelector('.food-badge');
   const unit_sel = row.querySelector('[name="unit"]');
-  // "einmalig" ticks itself for a food the catalog doesn't know, and clears
-  // again once a known one is picked — unless the user set it by hand.
-  const once = row.querySelector('[name="einmalig"]');
-  if (once && row.dataset.einmaligManual !== '1') once.checked = !food && !!input.value.trim();
+  // Offer "+ DB" only for a typed food the catalog doesn't know yet.
+  const add_btn = row.querySelector('.add-food-btn');
+  if (add_btn) add_btn.style.display = (!food && input.value.trim()) ? 'inline-block' : 'none';
   if (food) {
     row.dataset.per100kcal    = food.kcal_per_100g;
     row.dataset.per100protein = food.protein_per_100g;
@@ -1504,14 +1502,65 @@ function _row_macros_for_save(row) {
 // Whether to KEEP a meal ingredient out of the food catalog. Einmalig rows are
 // always kept out; a name already in the catalog is unaffected; a new (unknown)
 // name is kept out unless the user ticked "In Datenbank speichern".
+// Saving a meal never writes to the Lebensmitteldatenbank: a new food only
+// gets in through the explicit "+ DB" button on its row.
 function _row_skip_db(row) {
-  const once = row.querySelector('[name="einmalig"]');
-  return !!(once && once.checked);
+  return true;
 }
 
-// Ticking "einmalig" by hand pins it, so retyping the food name won't undo it.
-function on_einmalig_change(cb) {
-  cb.closest('tr').dataset.einmaligManual = '1';
+// "+ DB": take the row's own numbers and register the food, normalised to
+// 100 g/ml exactly like the Lebensmittel editor does. For a serving unit
+// (Stk., Dose/Glas …) no gram weight is known — that optional field simply
+// stays empty, which the rest of the app already handles.
+async function add_row_food_to_db(btn) {
+  const row  = btn.closest('tr');
+  const name = row.querySelector('[name="food_name"]').value.trim();
+  const amt  = parseFloat(row.querySelector('[name="amount_grams"]').value);
+  const unit = row.querySelector('[name="unit"]').value;
+  const num  = n => {
+    const raw = row.querySelector(`[name="${n}"]`).value;
+    return raw === '' ? NaN : parseFloat(raw);
+  };
+  const kcal = num('kcal'), protein = num('protein_g'),
+        carbs = num('carbs_g'), fat = num('fat_g');
+
+  if (!name)                    { alert('Bitte zuerst einen Namen eingeben.'); return; }
+  if (isNaN(amt) || amt <= 0)   { alert('Bitte zuerst eine Menge eingeben — ohne Bezugsmenge lassen sich die Nährwerte nicht umrechnen.'); return; }
+  if ([kcal, protein, carbs, fat].some(isNaN)) {
+    alert('Bitte zuerst alle Nährwerte (kcal, Eiweiß, KH, Fett) eintragen.');
+    return;
+  }
+
+  // Canonical units are per-100; a serving unit is stored per 1 unit against
+  // the same virtual 100 g basis the meal rows use (see _row_grams).
+  let unit_name = null, unit_grams = null, factor;
+  if (_is_canonical_unit(unit)) {
+    factor = 100 / amt;
+    if (unit === 'ml') { unit_name = 'ml'; unit_grams = 1; }
+  } else {
+    unit_name = unit;
+    factor    = 100 / (amt * 100);
+  }
+  btn.disabled = true;
+  try {
+    await api('POST', '/api/foods', {
+      name,
+      kcal_per_100g:    kcal    * factor,
+      protein_per_100g: protein * factor,
+      carbs_per_100g:   carbs   * factor,
+      fat_per_100g:     fat     * factor,
+      unit_name, unit_grams,
+      unit_weight_unit: _is_canonical_unit(unit) ? unit : null,
+      estimated: false,
+    });
+    await load_foods_db();
+    // Re-resolve the row so it picks up the badge, per-100 data and units.
+    on_food_name_change(row.querySelector('[name="food_name"]'));
+  } catch (err) {
+    alert('Fehler beim Speichern: ' + err.message);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 function switch_acts_tab(btn) {
@@ -2910,6 +2959,7 @@ function apply_recipe_adapted() {
     return;
   }
   close_modal2();
+  _drop_blank_em_rows();
   if (rname) _tag_recipe_name(rname);
   const round1 = v => Math.round(v * 10) / 10;
   for (const item of tmp.items) {
@@ -2965,6 +3015,7 @@ async function apply_recipe_to_meal() {
     return;
   }
   close_modal2();
+  _drop_blank_em_rows();
   _tag_recipe_name(r.name);
   const round1 = v => Math.round(v * 10) / 10;
   for (const item of r.items) {
@@ -3379,10 +3430,9 @@ function _item_row_html(item_id, food_name = '', amount = '', kcal = '', protein
              list="foods-datalist" oninput="on_food_name_change(this)" onchange="on_food_name_change(this)"
              style="margin:0;min-width:8rem;display:inline-block;width:auto">
       <span class="food-badge ${badge_cls}">${badge_text}</span>
-      <label class="einmalig-lbl" title="Nur für diese Mahlzeit — nicht in die Lebensmitteldatenbank aufnehmen">
-        <input type="checkbox" name="einmalig" ${skip_db ? 'checked' : ''}
-               onchange="on_einmalig_change(this)">einmalig
-      </label>
+      <button type="button" class="add-food-btn" title="Als Lebensmittel in die Datenbank aufnehmen"
+              style="display:${food || !food_name ? 'none' : 'inline-block'}"
+              onclick="add_row_food_to_db(this)">+ DB</button>
     </td>
     <td style="white-space:nowrap">
       <input type="number" name="amount_grams" value="${amount}" step="any" min="0" placeholder="Menge"
@@ -3390,10 +3440,10 @@ function _item_row_html(item_id, food_name = '', amount = '', kcal = '', protein
       <select name="unit" onchange="on_unit_change(this)"
               style="margin:0;width:auto;display:inline-block;padding:.2rem 1.4rem .2rem .4rem">${_unit_options_html(food, unit)}</select>
     </td>
-    <td><input type="number" name="kcal"         value="${kcal}"     step="1"   placeholder="kcal" style="margin:0;width:4.5rem" ${per100 ? 'readonly class="macro-auto"' : ''}></td>
-    <td><input type="number" name="protein_g"    value="${protein}"  step="0.1" placeholder="g"    style="margin:0;width:4rem"   ${per100 ? 'readonly class="macro-auto"' : ''}></td>
-    <td><input type="number" name="carbs_g"      value="${carbs}"    step="0.1" placeholder="g"    style="margin:0;width:4rem"   ${per100 ? 'readonly class="macro-auto"' : ''}></td>
-    <td><input type="number" name="fat_g"        value="${fat}"      step="0.1" placeholder="g"    style="margin:0;width:4rem"   ${per100 ? 'readonly class="macro-auto"' : ''}></td>
+    <td><input type="number" name="kcal"         value="${kcal}"     step="1"   placeholder="kcal" style="margin:0;width:4.5rem" ${per100 ? 'readonly' : ''}></td>
+    <td><input type="number" name="protein_g"    value="${protein}"  step="0.1" placeholder="g"    style="margin:0;width:4rem"   ${per100 ? 'readonly' : ''}></td>
+    <td><input type="number" name="carbs_g"      value="${carbs}"    step="0.1" placeholder="g"    style="margin:0;width:4rem"   ${per100 ? 'readonly' : ''}></td>
+    <td><input type="number" name="fat_g"        value="${fat}"      step="0.1" placeholder="g"    style="margin:0;width:4rem"   ${per100 ? 'readonly' : ''}></td>
     <td><button type="button" class="outline contrast" style="margin:0;padding:.15rem .4rem;width:auto;font-size:.8rem"
                 onclick="this.closest('tr').remove()">&#10005;</button></td>
   </tr>`;
@@ -3404,6 +3454,14 @@ function _item_row_html(item_id, food_name = '', amount = '', kcal = '', protein
 // measure — not its serving unit, or "49 g Möhre" would read as "49 Stk.".
 // A blank row keeps no unit: the serving-unit default is applied by
 // on_food_name_change once the user actually types a food.
+// Drop rows that have no food name — used before a bulk import so the empty
+// starter row doesn't linger between the imported ingredients.
+function _drop_blank_em_rows() {
+  document.querySelectorAll('#em-items tr').forEach(tr => {
+    if (!tr.querySelector('[name="food_name"]').value.trim()) tr.remove();
+  });
+}
+
 function add_em_item_row(food_name = '', amount = '', kcal = '', protein = '', carbs = '', fat = '') {
   const food   = food_name ? _food_lookup(food_name) : null;
   const per100 = food ? {
@@ -3428,6 +3486,7 @@ function import_meal_rows() {
   const factor = parse_factor(document.getElementById('em-import-factor').value);
   if (isNaN(factor) || factor <= 0) { alert('Ungültiger Faktor — z.B. 0.2 oder 1/5.'); return; }
   const round = (v, d) => Math.round(v * 10 ** d) / 10 ** d;
+  _drop_blank_em_rows();
   src.items.forEach(item => {
     // Use DB per-100g if available; otherwise derive from source item values
     const food = _food_lookup(item.food_name);
