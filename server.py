@@ -21,6 +21,9 @@ UPLOADS = Path(__file__).parent / "uploads"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Snapshot BEFORE init_db, so a migration that goes wrong still leaves
+    # today's pre-migration copy sitting in backups/.
+    db.backup_database()
     db.init_db()
     UPLOADS.mkdir(exist_ok=True)
     yield

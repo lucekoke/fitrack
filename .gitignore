@@ -5,6 +5,7 @@
 *.db
 *.db-wal
 *.db-shm
+backups/
 uploads/
 state.json
 

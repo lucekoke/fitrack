@@ -4,6 +4,7 @@ import logging
 import random
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 import config
 
@@ -16,6 +17,45 @@ def _connect() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
+
+
+def backup_database() -> Path | None:
+    """Write today's snapshot of the database into backups/.
+
+    Called on every server start; the file is named after the date, so the
+    first start of a day creates it and later ones overwrite it — one backup
+    per day without any scheduling. Nothing is ever deleted here: the whole
+    point is to still have the history after a bad edit or a lost file.
+
+    Uses SQLite's online-backup API rather than a file copy, so the snapshot is
+    consistent even while the app is writing (a plain copy can miss the WAL).
+    It is written to a temp file and moved into place, so an interrupted run
+    can never leave a half-written backup where a good one used to be.
+    """
+    src_path = Path(config.DB_PATH)
+    if not src_path.exists():
+        return None
+    backup_dir = src_path.resolve().parent / "backups"
+    backup_dir.mkdir(exist_ok=True)
+    dest = backup_dir / f"fitrack-{datetime.now().strftime('%Y-%m-%d')}.db"
+    tmp  = dest.with_name(dest.name + ".tmp")
+    try:
+        src = sqlite3.connect(config.DB_PATH)
+        try:
+            dst = sqlite3.connect(tmp)
+            try:
+                src.backup(dst)
+            finally:
+                dst.close()
+        finally:
+            src.close()
+        tmp.replace(dest)
+    except (sqlite3.Error, OSError):
+        log.exception("Database backup failed")
+        tmp.unlink(missing_ok=True)
+        return None
+    log.info("Database backed up to %s", dest)
+    return dest
 
 
 def init_db() -> None:
