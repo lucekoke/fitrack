@@ -5,6 +5,7 @@ let workouts  = [];
 let endurance = [];
 let sports    = [];
 let meals     = [];
+let sleep_log = [];
 let empty_days = [];   // dates added to the diary that have no meal yet
 let foods_db  = [];
 let recipes   = [];
@@ -18,7 +19,17 @@ async function api(method, url, body) {
     headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
     body:    body !== undefined ? JSON.stringify(body) : undefined,
   });
-  if (!resp.ok) throw new Error(await resp.text());
+  if (!resp.ok) {
+    // FastAPI reports errors as {"detail": "..."} — surface just that text so
+    // the user sees the message instead of raw JSON.
+    const raw = await resp.text();
+    let msg = raw;
+    try {
+      const d = JSON.parse(raw).detail;
+      if (typeof d === 'string') msg = d;
+    } catch { /* not JSON — show it as-is */ }
+    throw new Error(msg);
+  }
   const ct = resp.headers.get('content-type') || '';
   return ct.includes('json') ? resp.json() : null;
 }
@@ -182,6 +193,7 @@ document.querySelectorAll('.tab-link').forEach(link => {
     link.classList.add('active');
     document.getElementById(`tab-${link.dataset.tab}`).hidden = false;
     if (link.dataset.tab === 'body')     load_body();
+    if (link.dataset.tab === 'sleep')    load_sleep();
     if (link.dataset.tab === 'analysis') load_analysis();
   });
 });
@@ -3744,6 +3756,167 @@ async function do_copy_meal(session_id) {
 }
 
 // ─── Körper (body weight / measurements / photos) ─────────────────────────
+
+// ─── Schlaf ───────────────────────────────────────────────────────────────
+// One row per night, keyed by the date the night STARTS on: 18.08. is the
+// night from the 18th to the 19th. All times are wall-clock 'HH:MM', so every
+// duration is measured forward from lights-out, wrapping past midnight.
+
+function _hm_to_min(hm) {
+  const [h, m] = String(hm).split(':').map(Number);
+  return h * 60 + m;
+}
+
+// Minutes from `bed` forward to `t`, wrapping around midnight (0…1439).
+function _mins_after(bed, t) {
+  return ((_hm_to_min(t) - _hm_to_min(bed)) + 1440) % 1440;
+}
+
+function fmt_dur_min(min) {
+  return `${Math.floor(min / 60)}:${String(Math.round(min) % 60).padStart(2, '0')} h`;
+}
+
+// Time in bed, actual sleep and efficiency for one night. Sleep and efficiency
+// are only known when both optional times were entered.
+function _sleep_stats(s) {
+  const in_bed = _mins_after(s.bed_time, s.up_time) || 1440;   // 00:00→00:00 = a full day
+  const asleep = (s.asleep_time && s.awake_time)
+    ? _mins_after(s.bed_time, s.awake_time) - _mins_after(s.bed_time, s.asleep_time)
+    : null;
+  return { in_bed, asleep, efficiency: asleep != null ? asleep / in_bed : null };
+}
+
+async function load_sleep() {
+  try {
+    sleep_log = await api('GET', '/api/sleep');
+    render_sleep();
+  } catch (err) {
+    document.getElementById('sleep-list').innerHTML =
+      `<p style="color:var(--pico-del-color)">Fehler beim Laden: ${esc(err.message)}</p>`;
+  }
+}
+
+function render_sleep() {
+  const el = document.getElementById('sleep-list');
+  if (!el) return;
+  if (!sleep_log.length) {
+    el.innerHTML = '<p class="empty">Noch keine Nächte erfasst.</p>';
+    return;
+  }
+  el.innerHTML = `<figure><table>
+    <thead><tr>
+      <th>Nacht</th><th>Zu Bett</th><th>Auf</th><th>Im Bett</th>
+      <th>Geschlafen</th><th>Score</th><th>Kommentar</th><th></th>
+    </tr></thead>
+    <tbody>${sleep_log.map(s => {
+      const st = _sleep_stats(s);
+      const next = new Date(s.date + 'T00:00:00');
+      next.setDate(next.getDate() + 1);
+      const slept = st.asleep != null
+        ? `${fmt_dur_min(st.asleep)} <small style="color:var(--pico-muted-color)">(${Math.round(st.efficiency * 100)}%)</small>`
+        : '<span style="color:var(--pico-muted-color)">&ndash;</span>';
+      return `
+      <tr>
+        <td style="white-space:nowrap">${fmt_de(s.date)}
+          <small style="color:var(--pico-muted-color)">&rarr; ${String(next.getDate()).padStart(2, '0')}.${String(next.getMonth() + 1).padStart(2, '0')}.</small>
+        </td>
+        <td>${esc(s.bed_time)}${s.asleep_time ? ` <small style="color:var(--pico-muted-color)">(ein: ${esc(s.asleep_time)})</small>` : ''}</td>
+        <td>${esc(s.up_time)}${s.awake_time ? ` <small style="color:var(--pico-muted-color)">(wach: ${esc(s.awake_time)})</small>` : ''}</td>
+        <td>${fmt_dur_min(st.in_bed)}</td>
+        <td style="white-space:nowrap">${slept}</td>
+        <td>${s.score}<small style="color:var(--pico-muted-color)">/10</small></td>
+        <td>${s.comment ? esc(s.comment) : '<span style="color:var(--pico-muted-color)">&ndash;</span>'}</td>
+        <td class="row-actions">
+          <button class="outline secondary" onclick="open_edit_sleep(${s.id})">&#9998;</button>
+          <button class="outline contrast"  onclick="del_sleep(${s.id})">&#10005;</button>
+        </td>
+      </tr>`;
+    }).join('')}
+    </tbody>
+  </table></figure>`;
+}
+
+function tpl_sleep(s = null) {
+  const v = (k, d = '') => s && s[k] != null ? esc(s[k]) : d;
+  return `<form>
+    <label>Nacht vom
+      <input type="date" name="date" value="${v('date', today_local())}" required>
+      <small style="color:var(--pico-muted-color)">Startdatum &mdash; 18.08. ist die Nacht vom 18. auf den 19.</small>
+    </label>
+    <div class="grid">
+      <label>Zu Bett<input type="time" name="bed_time" value="${v('bed_time')}" required></label>
+      <label>Aufgestanden<input type="time" name="up_time" value="${v('up_time')}" required></label>
+    </div>
+    <label>Schlafqualität (1&ndash;10)
+      <input type="number" name="score" min="1" max="10" step="1" value="${v('score')}" required>
+      <small style="color:var(--pico-muted-color)">Subjektiv: 1 = sehr schlecht, 10 = sehr gut</small>
+    </label>
+    <div class="grid">
+      <label>Eingeschlafen (optional)<input type="time" name="asleep_time" value="${v('asleep_time')}"></label>
+      <label>Aufgewacht (optional)<input type="time" name="awake_time" value="${v('awake_time')}"></label>
+    </div>
+    <small style="display:block;margin:-.4rem 0 .8rem;color:var(--pico-muted-color)">
+      Beide müssen zwischen Zubettgehen und Aufstehen liegen.
+    </small>
+    <label>Kommentar (optional)<input type="text" name="comment" value="${v('comment')}"></label>
+    <div class="form-footer">
+      <button type="button" class="secondary outline" onclick="close_modal()">Abbrechen</button>
+      <button type="submit">Speichern</button>
+    </div>
+  </form>`;
+}
+
+// Validate and shape the form. Throws with a German message, which open_modal
+// surfaces to the user and which keeps the dialog open.
+function _parse_sleep_form(data) {
+  const { date, bed_time, up_time } = data;
+  if (!date || !bed_time || !up_time) throw new Error('Datum, Zubettgeh- und Aufstehzeit sind nötig.');
+  const score = parseInt(data.score, 10);
+  if (isNaN(score) || score < 1 || score > 10) throw new Error('Schlafqualität muss zwischen 1 und 10 liegen.');
+
+  const in_bed = _mins_after(bed_time, up_time);
+  if (in_bed === 0) throw new Error('Aufstehzeit muss sich von der Zubettgehzeit unterscheiden.');
+
+  const asleep = data.asleep_time || null;
+  const awake  = data.awake_time  || null;
+  // Offsets are measured from lights-out, so "after midnight" needs no special
+  // case — anything past getting up simply lands beyond `in_bed`.
+  if (asleep && _mins_after(bed_time, asleep) > in_bed)
+    throw new Error('Einschlafzeit muss zwischen Zubettgehen und Aufstehen liegen.');
+  if (awake && _mins_after(bed_time, awake) > in_bed)
+    throw new Error('Aufwachzeit muss zwischen Zubettgehen und Aufstehen liegen.');
+  if (asleep && awake && _mins_after(bed_time, asleep) > _mins_after(bed_time, awake))
+    throw new Error('Aufwachzeit muss nach der Einschlafzeit liegen.');
+
+  return { date, bed_time, up_time, score,
+           asleep_time: asleep, awake_time: awake,
+           comment: data.comment || null };
+}
+
+function open_new_sleep() {
+  open_modal('Nacht hinzufügen', tpl_sleep(), async data => {
+    await api('POST', '/api/sleep', _parse_sleep_form(data));
+    await load_sleep();
+  });
+}
+
+function open_edit_sleep(id) {
+  const s = sleep_log.find(x => x.id === id);
+  if (!s) return;
+  open_modal('Nacht bearbeiten', tpl_sleep(s), async data => {
+    await api('PUT', `/api/sleep/${id}`, _parse_sleep_form(data));
+    await load_sleep();
+  });
+}
+
+async function del_sleep(id) {
+  const s = sleep_log.find(x => x.id === id);
+  if (!s || !confirm(`Eintrag für die Nacht vom ${fmt_de(s.date)} löschen?`)) return;
+  await api('DELETE', `/api/sleep/${id}`);
+  await load_sleep();
+}
+
+// ─── Körper ───────────────────────────────────────────────────────────────
 
 let body_weight   = [];
 let body_measures = [];

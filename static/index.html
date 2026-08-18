@@ -17,6 +17,7 @@
         <li><a href="#" class="tab-link active" data-tab="activities">Aktivitäten</a></li>
         <li><a href="#" class="tab-link" data-tab="meals">Ernährung</a></li>
         <li><a href="#" class="tab-link" data-tab="body">Körper</a></li>
+        <li><a href="#" class="tab-link" data-tab="sleep">Schlaf</a></li>
         <li><a href="#" class="tab-link" data-tab="analysis">Analyse</a></li>
         <li><a href="#" class="tab-link" data-tab="coach">AI Coach</a></li>
       </ul>
@@ -103,6 +104,15 @@
       <div id="body-photos-grid" class="photo-grid"></div>
     </section>
 
+    <!-- ── Schlaf ── -->
+    <section id="tab-sleep" class="tab-content" hidden>
+      <div class="section-header">
+        <h2>Schlaf</h2>
+        <button onclick="open_new_sleep()">+ Nacht hinzufügen</button>
+      </div>
+      <div id="sleep-list"><p class="empty">Lade...</p></div>
+    </section>
+
     <!-- ── Analyse ── -->
     <section id="tab-analysis" class="tab-content" hidden>
       <h2>Analyse</h2>
@@ -156,6 +166,6 @@
     </article>
   </dialog>
 
-  <script src="/static/app.js?v=72"></script>
+  <script src="/static/app.js?v=74"></script>
 </body>
 </html>

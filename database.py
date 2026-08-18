@@ -158,6 +158,7 @@ def init_db() -> None:
         _migrate_add_body_tables(conn)
         _migrate_add_food_v2(conn)
         _migrate_add_settings(conn)
+        _migrate_add_sleep(conn)
         _migrate_food_estimated(conn)
         _migrate_round_nutrition(conn)
         _migrate_clear_stray_weight_unit(conn)
@@ -176,6 +177,30 @@ def _migrate_clear_stray_weight_unit(conn: sqlite3.Connection) -> None:
         "WHERE unit_weight_unit IS NOT NULL "
         "  AND (unit_name IS NULL OR unit_name IN ('g', 'ml'))"
     )
+    conn.commit()
+
+
+def _migrate_add_sleep(conn: sqlite3.Connection) -> None:
+    """One row per night, keyed by the date the night STARTS on.
+
+    Times are plain 'HH:MM' local wall-clock strings — a night crosses
+    midnight, so durations are derived by wrapping around 24 h rather than by
+    comparing timestamps. bed/up/score are required, the two "actually asleep"
+    times and the comment are optional.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sleep_log (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            date        TEXT    NOT NULL UNIQUE,
+            bed_time    TEXT    NOT NULL,
+            up_time     TEXT    NOT NULL,
+            score       INTEGER NOT NULL,
+            asleep_time TEXT,
+            awake_time  TEXT,
+            comment     TEXT,
+            created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+        )
+    """)
     conn.commit()
 
 
@@ -1172,6 +1197,42 @@ def delete_recipe(recipe_id: int) -> None:
     with _connect() as conn:
         conn.execute("DELETE FROM recipe_items WHERE recipe_id=?", (recipe_id,))
         conn.execute("DELETE FROM recipes WHERE id=?", (recipe_id,))
+
+
+# ── Sleep ──────────────────────────────────────────────────────────────────
+
+def get_all_sleep() -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute("SELECT * FROM sleep_log ORDER BY date DESC").fetchall()
+    return [dict(r) for r in rows]
+
+
+def insert_sleep(date: str, bed_time: str, up_time: str, score: int,
+                 asleep_time: str | None, awake_time: str | None,
+                 comment: str | None) -> int:
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO sleep_log (date, bed_time, up_time, score, asleep_time, awake_time, comment) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (date, bed_time, up_time, score, asleep_time, awake_time, comment),
+        )
+    return cur.lastrowid
+
+
+def update_sleep(sleep_id: int, date: str, bed_time: str, up_time: str, score: int,
+                 asleep_time: str | None, awake_time: str | None,
+                 comment: str | None) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE sleep_log SET date=?, bed_time=?, up_time=?, score=?, "
+            "asleep_time=?, awake_time=?, comment=? WHERE id=?",
+            (date, bed_time, up_time, score, asleep_time, awake_time, comment, sleep_id),
+        )
+
+
+def delete_sleep(sleep_id: int) -> None:
+    with _connect() as conn:
+        conn.execute("DELETE FROM sleep_log WHERE id=?", (sleep_id,))
 
 
 # ── Body tracking ──────────────────────────────────────────────────────────
