@@ -3804,28 +3804,26 @@ function render_sleep() {
     el.innerHTML = '<p class="empty">Noch keine Nächte erfasst.</p>';
     return;
   }
+  const dash = '<span style="color:var(--pico-muted-color)">&ndash;</span>';
   el.innerHTML = `<figure><table>
     <thead><tr>
-      <th>Nacht</th><th>Zu Bett</th><th>Auf</th><th>Zeit im Bett</th>
-      <th>Schlafdauer</th><th>Score</th><th>Kommentar</th><th></th>
+      <th>Nacht</th><th>Zu Bett</th><th>Eingeschlafen</th><th>Aufgewacht</th><th>Aufgestanden</th>
+      <th>Zeit im Bett</th><th>Schlafdauer</th><th>Score</th><th>Kommentar</th><th></th>
     </tr></thead>
     <tbody>${sleep_log.map(s => {
       const st = _sleep_stats(s);
-      const next = new Date(s.date + 'T00:00:00');
-      next.setDate(next.getDate() + 1);
-      const slept = `${fmt_dur_min(st.slept)} <small style="color:var(--pico-muted-color)">(${Math.round(st.efficiency * 100)}%)</small>`;
       const tz = s.tz_shift ? ` <small style="color:var(--pico-muted-color)">${s.tz_shift > 0 ? '+' : ''}${s.tz_shift} h</small>` : '';
       return `
       <tr>
-        <td style="white-space:nowrap">${fmt_de(s.date)}
-          <small style="color:var(--pico-muted-color)">&rarr; ${String(next.getDate()).padStart(2, '0')}.${String(next.getMonth() + 1).padStart(2, '0')}.</small>
-        </td>
-        <td>${esc(s.bed_time)}${s.asleep_time ? ` <small style="color:var(--pico-muted-color)">(ein: ${esc(s.asleep_time)})</small>` : ''}</td>
-        <td>${esc(s.up_time)}${s.awake_time ? ` <small style="color:var(--pico-muted-color)">(wach: ${esc(s.awake_time)})</small>` : ''}</td>
+        <td style="white-space:nowrap">${fmt_de(s.date)}</td>
+        <td>${esc(s.bed_time)}</td>
+        <td>${s.asleep_time ? esc(s.asleep_time) : dash}</td>
+        <td>${s.awake_time  ? esc(s.awake_time)  : dash}</td>
+        <td>${esc(s.up_time)}</td>
         <td style="white-space:nowrap">${fmt_dur_min(st.in_bed)}${tz}</td>
-        <td style="white-space:nowrap">${slept}</td>
-        <td>${s.score}<small style="color:var(--pico-muted-color)">/10</small></td>
-        <td>${s.comment ? esc(s.comment) : '<span style="color:var(--pico-muted-color)">&ndash;</span>'}</td>
+        <td style="white-space:nowrap">${fmt_dur_min(st.slept)}</td>
+        <td>${s.score}</td>
+        <td>${s.comment ? esc(s.comment) : dash}</td>
         <td class="row-actions">
           <button class="outline secondary" onclick="open_edit_sleep(${s.id})">&#9998;</button>
           <button class="outline contrast"  onclick="del_sleep(${s.id})">&#10005;</button>
