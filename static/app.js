@@ -3836,24 +3836,52 @@ function render_sleep() {
   </table></figure>`;
 }
 
+// Times are plain text fields, not <input type="time">: browsers render that
+// one in their own UI language, which turns 23:30 into "11:30 PM" for anyone
+// whose browser isn't German. A text field is always 24 h.
+const _TIME_ATTRS = 'type="text" inputmode="numeric" maxlength="5" placeholder="23:30" ' +
+                    'pattern="([01][0-9]|2[0-3]):[0-5][0-9]" onblur="_normalize_time_field(this)" ' +
+                    'style="font-variant-numeric:tabular-nums"';
+
+// Accept "2330", "23.30", "23:30" and settle on "23:30" when the field is left.
+function _normalize_time_field(inp) {
+  const digits = inp.value.replace(/\D/g, '');
+  if (digits.length === 3)      inp.value = `0${digits[0]}:${digits.slice(1)}`;
+  else if (digits.length === 4) inp.value = `${digits.slice(0, 2)}:${digits.slice(2)}`;
+}
+
+function update_sleep_night_hint() {
+  const inp = document.querySelector('#modal-body [name="date"]');
+  const el  = document.getElementById('sleep-night-hint');
+  if (!inp || !el) return;
+  if (!inp.value) { el.textContent = ''; return; }   // nothing chosen → say nothing
+  const d = new Date(inp.value + 'T00:00:00');
+  const n = new Date(d);
+  n.setDate(n.getDate() + 1);
+  const p  = x => String(x).padStart(2, '0');
+  const dm = x => `${p(x.getDate())}.${p(x.getMonth() + 1)}.`;
+  el.textContent = `Nacht vom ${dm(d)} auf den ${dm(n)}${n.getFullYear()}`;
+}
+
 function tpl_sleep(s = null) {
   const v = (k, d = '') => s && s[k] != null ? esc(s[k]) : d;
   return `<form>
     <label>Nacht vom
-      <input type="date" name="date" value="${v('date', today_local())}" required>
-      <small style="color:var(--pico-muted-color)">Startdatum &mdash; 18.08. ist die Nacht vom 18. auf den 19.</small>
+      <input type="date" name="date" value="${v('date', today_local())}" required
+             oninput="update_sleep_night_hint()">
+      <small id="sleep-night-hint" style="color:var(--pico-muted-color)"></small>
     </label>
     <div class="grid">
-      <label>Zu Bett<input type="time" name="bed_time" value="${v('bed_time')}" required></label>
-      <label>Aufgestanden<input type="time" name="up_time" value="${v('up_time')}" required></label>
+      <label>Zu Bett<input ${_TIME_ATTRS} name="bed_time" value="${v('bed_time')}" required></label>
+      <label>Aufgestanden<input ${_TIME_ATTRS} name="up_time" value="${v('up_time')}" required></label>
     </div>
     <label>Schlafqualität (1&ndash;10)
       <input type="number" name="score" min="1" max="10" step="1" value="${v('score')}" required>
       <small style="color:var(--pico-muted-color)">Subjektiv: 1 = sehr schlecht, 10 = sehr gut</small>
     </label>
     <div class="grid">
-      <label>Eingeschlafen (optional)<input type="time" name="asleep_time" value="${v('asleep_time')}"></label>
-      <label>Aufgewacht (optional)<input type="time" name="awake_time" value="${v('awake_time')}"></label>
+      <label>Eingeschlafen (optional)<input ${_TIME_ATTRS} name="asleep_time" value="${v('asleep_time')}"></label>
+      <label>Aufgewacht (optional)<input ${_TIME_ATTRS} name="awake_time" value="${v('awake_time')}"></label>
     </div>
     <small style="display:block;margin:-.4rem 0 .8rem;color:var(--pico-muted-color)">
       Beide müssen zwischen Zubettgehen und Aufstehen liegen.
@@ -3871,6 +3899,12 @@ function tpl_sleep(s = null) {
 function _parse_sleep_form(data) {
   const { date, bed_time, up_time } = data;
   if (!date || !bed_time || !up_time) throw new Error('Datum, Zubettgeh- und Aufstehzeit sind nötig.');
+  // Free-text time fields, so the format has to be checked here.
+  const valid_hm = t => /^([01][0-9]|2[0-3]):[0-5][0-9]$/.test(t);
+  for (const [label, t] of [['Zubettgeh', bed_time], ['Aufsteh', up_time],
+                            ['Einschlaf', data.asleep_time], ['Aufwach', data.awake_time]]) {
+    if (t && !valid_hm(t)) throw new Error(`${label}zeit bitte als 24-Stunden-Zeit angeben, z.B. 23:30.`);
+  }
   const score = parseInt(data.score, 10);
   if (isNaN(score) || score < 1 || score > 10) throw new Error('Schlafqualität muss zwischen 1 und 10 liegen.');
 
@@ -3898,6 +3932,7 @@ function open_new_sleep() {
     await api('POST', '/api/sleep', _parse_sleep_form(data));
     await load_sleep();
   });
+  update_sleep_night_hint();
 }
 
 function open_edit_sleep(id) {
@@ -3907,6 +3942,7 @@ function open_edit_sleep(id) {
     await api('PUT', `/api/sleep/${id}`, _parse_sleep_form(data));
     await load_sleep();
   });
+  update_sleep_night_hint();
 }
 
 async function del_sleep(id) {
