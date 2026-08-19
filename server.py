@@ -546,6 +546,7 @@ class SleepIn(BaseModel):
     score: int                          # subjective, 1–10
     asleep_time: str | None = None      # optional, within bed→up
     awake_time: str | None = None       # optional, within bed→up
+    tz_shift: int | None = None         # hours gained/lost overnight, −12…+12
     comment: str | None = None
 
 
@@ -558,7 +559,8 @@ def get_sleep():
 def create_sleep(body: SleepIn):
     try:
         sid = db.insert_sleep(body.date, body.bed_time, body.up_time, body.score,
-                              body.asleep_time, body.awake_time, body.comment)
+                              body.asleep_time, body.awake_time, body.comment,
+                              body.tz_shift)
     except sqlite3.IntegrityError:
         raise HTTPException(400, "Für diese Nacht gibt es bereits einen Eintrag.")
     return {"id": sid}
@@ -568,7 +570,8 @@ def create_sleep(body: SleepIn):
 def put_sleep(sleep_id: int, body: SleepIn):
     try:
         db.update_sleep(sleep_id, body.date, body.bed_time, body.up_time, body.score,
-                        body.asleep_time, body.awake_time, body.comment)
+                        body.asleep_time, body.awake_time, body.comment,
+                        body.tz_shift)
     except sqlite3.IntegrityError:
         raise HTTPException(400, "Für diese Nacht gibt es bereits einen Eintrag.")
     return {"ok": True}

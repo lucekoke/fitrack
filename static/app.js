@@ -3776,14 +3776,15 @@ function fmt_dur_min(min) {
   return `${Math.floor(min / 60)}:${String(Math.round(min) % 60).padStart(2, '0')} h`;
 }
 
-// Time in bed, actual sleep and efficiency for one night. Sleep and efficiency
-// are only known when both optional times were entered.
+// Both durations are computed and stored server-side (see sleep_durations), so
+// the table just reads them. Older rows without them fall back to the times.
 function _sleep_stats(s) {
-  const in_bed = _mins_after(s.bed_time, s.up_time) || 1440;   // 00:00→00:00 = a full day
-  const asleep = (s.asleep_time && s.awake_time)
-    ? _mins_after(s.bed_time, s.awake_time) - _mins_after(s.bed_time, s.asleep_time)
-    : null;
-  return { in_bed, asleep, efficiency: asleep != null ? asleep / in_bed : null };
+  const shift  = (s.tz_shift || 0) * 60;
+  const in_bed = s.in_bed_min != null ? s.in_bed_min
+               : (_mins_after(s.bed_time, s.up_time) || 1440) + shift;
+  const slept  = s.sleep_min != null ? s.sleep_min
+               : (_mins_after(s.asleep_time || s.bed_time, s.awake_time || s.up_time) || 1440) + shift;
+  return { in_bed, slept, efficiency: in_bed > 0 ? slept / in_bed : null };
 }
 
 async function load_sleep() {
@@ -3805,16 +3806,15 @@ function render_sleep() {
   }
   el.innerHTML = `<figure><table>
     <thead><tr>
-      <th>Nacht</th><th>Zu Bett</th><th>Auf</th><th>Im Bett</th>
-      <th>Geschlafen</th><th>Score</th><th>Kommentar</th><th></th>
+      <th>Nacht</th><th>Zu Bett</th><th>Auf</th><th>Zeit im Bett</th>
+      <th>Schlafdauer</th><th>Score</th><th>Kommentar</th><th></th>
     </tr></thead>
     <tbody>${sleep_log.map(s => {
       const st = _sleep_stats(s);
       const next = new Date(s.date + 'T00:00:00');
       next.setDate(next.getDate() + 1);
-      const slept = st.asleep != null
-        ? `${fmt_dur_min(st.asleep)} <small style="color:var(--pico-muted-color)">(${Math.round(st.efficiency * 100)}%)</small>`
-        : '<span style="color:var(--pico-muted-color)">&ndash;</span>';
+      const slept = `${fmt_dur_min(st.slept)} <small style="color:var(--pico-muted-color)">(${Math.round(st.efficiency * 100)}%)</small>`;
+      const tz = s.tz_shift ? ` <small style="color:var(--pico-muted-color)">${s.tz_shift > 0 ? '+' : ''}${s.tz_shift} h</small>` : '';
       return `
       <tr>
         <td style="white-space:nowrap">${fmt_de(s.date)}
@@ -3822,7 +3822,7 @@ function render_sleep() {
         </td>
         <td>${esc(s.bed_time)}${s.asleep_time ? ` <small style="color:var(--pico-muted-color)">(ein: ${esc(s.asleep_time)})</small>` : ''}</td>
         <td>${esc(s.up_time)}${s.awake_time ? ` <small style="color:var(--pico-muted-color)">(wach: ${esc(s.awake_time)})</small>` : ''}</td>
-        <td>${fmt_dur_min(st.in_bed)}</td>
+        <td style="white-space:nowrap">${fmt_dur_min(st.in_bed)}${tz}</td>
         <td style="white-space:nowrap">${slept}</td>
         <td>${s.score}<small style="color:var(--pico-muted-color)">/10</small></td>
         <td>${s.comment ? esc(s.comment) : '<span style="color:var(--pico-muted-color)">&ndash;</span>'}</td>
@@ -3839,15 +3839,45 @@ function render_sleep() {
 // Times are plain text fields, not <input type="time">: browsers render that
 // one in their own UI language, which turns 23:30 into "11:30 PM" for anyone
 // whose browser isn't German. A text field is always 24 h.
-const _TIME_ATTRS = 'type="text" inputmode="numeric" maxlength="5" placeholder="23:30" ' +
-                    'pattern="([01][0-9]|2[0-3]):[0-5][0-9]" onblur="_normalize_time_field(this)" ' +
-                    'style="font-variant-numeric:tabular-nums"';
+// A leading zero is optional (7:00 = 07:00) and 24:00 means midnight.
+const _TIME_RE = /^(\d{1,2}):([0-5][0-9])$/;
+const _time_attrs = ph =>
+  `type="text" inputmode="numeric" maxlength="5" placeholder="${ph}" ` +
+  `pattern="([01]?[0-9]|2[0-4]):[0-5][0-9]" onblur="_normalize_time_field(this)" ` +
+  `style="font-variant-numeric:tabular-nums"`;
 
-// Accept "2330", "23.30", "23:30" and settle on "23:30" when the field is left.
+// Canonical 'HH:MM', or null if it isn't a time. "2330"/"23.30"/"7:00"/"24:00"
+// all resolve; 24:00 folds onto 00:00 so it can be entered either way.
+function _norm_hm(raw) {
+  let t = String(raw || '').trim();
+  if (!t) return null;
+  const digits = t.replace(/\D/g, '');
+  if (!t.includes(':')) {
+    if (digits.length === 3)      t = `${digits[0]}:${digits.slice(1)}`;
+    else if (digits.length === 4) t = `${digits.slice(0, 2)}:${digits.slice(2)}`;
+    else return null;
+  }
+  const m = t.replace('.', ':').match(_TIME_RE);
+  if (!m) return null;
+  const h = Number(m[1]);
+  if (h > 24) return null;
+  return `${String(h % 24).padStart(2, '0')}:${m[2]}`;
+}
+
 function _normalize_time_field(inp) {
-  const digits = inp.value.replace(/\D/g, '');
-  if (digits.length === 3)      inp.value = `0${digits[0]}:${digits.slice(1)}`;
-  else if (digits.length === 4) inp.value = `${digits.slice(0, 2)}:${digits.slice(2)}`;
+  const t = _norm_hm(inp.value);
+  if (t) inp.value = t;
+}
+
+// −12…+12 full hours; blank means "no shift".
+function _tz_options(sel) {
+  const opts = ['<option value="">&mdash;</option>'];
+  for (let h = 12; h >= -12; h--) {
+    if (h === 0) continue;
+    const label = h > 0 ? `+${h} h` : `${h} h`;
+    opts.push(`<option value="${h}" ${String(sel) === String(h) ? 'selected' : ''}>${label}</option>`);
+  }
+  return opts.join('');
 }
 
 function update_sleep_night_hint() {
@@ -3872,20 +3902,23 @@ function tpl_sleep(s = null) {
       <small id="sleep-night-hint" style="color:var(--pico-muted-color)"></small>
     </label>
     <div class="grid">
-      <label>Zu Bett<input ${_TIME_ATTRS} name="bed_time" value="${v('bed_time')}" required></label>
-      <label>Aufgestanden<input ${_TIME_ATTRS} name="up_time" value="${v('up_time')}" required></label>
+      <label>Zu Bett<input ${_time_attrs('23:00')} name="bed_time" value="${v('bed_time')}" required></label>
+      <label>Aufgestanden<input ${_time_attrs('07:30')} name="up_time" value="${v('up_time')}" required></label>
     </div>
     <label>Schlafqualität (1&ndash;10)
       <input type="number" name="score" min="1" max="10" step="1" value="${v('score')}" required>
       <small style="color:var(--pico-muted-color)">Subjektiv: 1 = sehr schlecht, 10 = sehr gut</small>
     </label>
     <div class="grid">
-      <label>Eingeschlafen (optional)<input ${_TIME_ATTRS} name="asleep_time" value="${v('asleep_time')}"></label>
-      <label>Aufgewacht (optional)<input ${_TIME_ATTRS} name="awake_time" value="${v('awake_time')}"></label>
+      <label>Eingeschlafen (optional)<input ${_time_attrs('23:15')} name="asleep_time" value="${v('asleep_time')}"></label>
+      <label>Aufgewacht (optional)<input ${_time_attrs('07:15')} name="awake_time" value="${v('awake_time')}"></label>
     </div>
-    <small style="display:block;margin:-.4rem 0 .8rem;color:var(--pico-muted-color)">
-      Beide müssen zwischen Zubettgehen und Aufstehen liegen.
-    </small>
+    <label>Zeitverschiebung (optional)
+      <select name="tz_shift">${_tz_options(s ? s.tz_shift : null)}</select>
+      <small style="color:var(--pico-muted-color)">
+        Wird auf beide Dauern gerechnet &mdash; z.B. +1 = eine Stunde mehr.
+      </small>
+    </label>
     <label>Kommentar (optional)<input type="text" name="comment" value="${v('comment')}"></label>
     <div class="form-footer">
       <button type="button" class="secondary outline" onclick="close_modal()">Abbrechen</button>
@@ -3899,32 +3932,38 @@ function tpl_sleep(s = null) {
 function _parse_sleep_form(data) {
   const { date, bed_time, up_time } = data;
   if (!date || !bed_time || !up_time) throw new Error('Datum, Zubettgeh- und Aufstehzeit sind nötig.');
-  // Free-text time fields, so the format has to be checked here.
-  const valid_hm = t => /^([01][0-9]|2[0-3]):[0-5][0-9]$/.test(t);
-  for (const [label, t] of [['Zubettgeh', bed_time], ['Aufsteh', up_time],
-                            ['Einschlaf', data.asleep_time], ['Aufwach', data.awake_time]]) {
-    if (t && !valid_hm(t)) throw new Error(`${label}zeit bitte als 24-Stunden-Zeit angeben, z.B. 23:30.`);
+  // Free-text time fields, so parse/normalise here (7:00 → 07:00, 24:00 → 00:00).
+  const times = {};
+  for (const [key, label] of [['bed_time', 'Zubettgeh'], ['up_time', 'Aufsteh'],
+                              ['asleep_time', 'Einschlaf'], ['awake_time', 'Aufwach']]) {
+    if (!data[key]) { times[key] = null; continue; }
+    const t = _norm_hm(data[key]);
+    if (!t) throw new Error(`${label}zeit bitte als 24-Stunden-Zeit angeben, z.B. 23:30.`);
+    times[key] = t;
   }
   const score = parseInt(data.score, 10);
   if (isNaN(score) || score < 1 || score > 10) throw new Error('Schlafqualität muss zwischen 1 und 10 liegen.');
 
-  const in_bed = _mins_after(bed_time, up_time);
-  if (in_bed === 0) throw new Error('Aufstehzeit muss sich von der Zubettgehzeit unterscheiden.');
+  const bed = times.bed_time, up = times.up_time;
+  const in_bed = _mins_after(bed, up) || 1440;   // equal times = a full 24 h
 
-  const asleep = data.asleep_time || null;
-  const awake  = data.awake_time  || null;
+  const asleep = times.asleep_time, awake = times.awake_time;
   // Offsets are measured from lights-out, so "after midnight" needs no special
   // case — anything past getting up simply lands beyond `in_bed`.
-  if (asleep && _mins_after(bed_time, asleep) > in_bed)
+  if (asleep && _mins_after(bed, asleep) > in_bed)
     throw new Error('Einschlafzeit muss zwischen Zubettgehen und Aufstehen liegen.');
-  if (awake && _mins_after(bed_time, awake) > in_bed)
+  if (awake && _mins_after(bed, awake) > in_bed)
     throw new Error('Aufwachzeit muss zwischen Zubettgehen und Aufstehen liegen.');
-  if (asleep && awake && _mins_after(bed_time, asleep) > _mins_after(bed_time, awake))
+  if (asleep && awake && _mins_after(bed, asleep) > _mins_after(bed, awake))
     throw new Error('Aufwachzeit muss nach der Einschlafzeit liegen.');
 
-  return { date, bed_time, up_time, score,
+  const tz = data.tz_shift ? parseInt(data.tz_shift, 10) : null;
+  if (tz != null && (isNaN(tz) || tz < -12 || tz > 12))
+    throw new Error('Zeitverschiebung muss zwischen -12 und +12 Stunden liegen.');
+
+  return { date, bed_time: bed, up_time: up, score,
            asleep_time: asleep, awake_time: awake,
-           comment: data.comment || null };
+           tz_shift: tz, comment: data.comment || null };
 }
 
 function open_new_sleep() {

@@ -197,11 +197,56 @@ def _migrate_add_sleep(conn: sqlite3.Connection) -> None:
             score       INTEGER NOT NULL,
             asleep_time TEXT,
             awake_time  TEXT,
+            tz_shift    INTEGER,
+            in_bed_min  INTEGER,
+            sleep_min   INTEGER,
             comment     TEXT,
             created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
         )
     """)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(sleep_log)").fetchall()}
+    for col in ("tz_shift", "in_bed_min", "sleep_min"):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE sleep_log ADD COLUMN {col} INTEGER")
+    # Fill the stored durations for rows written before they existed.
+    for r in conn.execute("SELECT * FROM sleep_log WHERE in_bed_min IS NULL").fetchall():
+        in_bed, slept = sleep_durations(r["bed_time"], r["up_time"],
+                                        r["asleep_time"], r["awake_time"],
+                                        r["tz_shift"])
+        conn.execute("UPDATE sleep_log SET in_bed_min=?, sleep_min=? WHERE id=?",
+                     (in_bed, slept, r["id"]))
     conn.commit()
+
+
+def _hm_to_min(t: str) -> int:
+    """'23:30' → 1410. Accepts '7:00' and treats '24:00' as midnight."""
+    h, m = t.split(":")
+    return (int(h) % 24) * 60 + int(m)
+
+
+def _span_min(start: str, end: str) -> int:
+    """Minutes from start forward to end, wrapping past midnight.
+
+    Equal times mean a full 24 h rather than nothing — a night is never
+    zero-length, and this is the only reading that makes '23:00 → 23:00'
+    sensible."""
+    return ((_hm_to_min(end) - _hm_to_min(start)) % 1440) or 1440
+
+
+def sleep_durations(bed_time: str, up_time: str,
+                    asleep_time: str | None, awake_time: str | None,
+                    tz_shift: int | None) -> tuple[int, int]:
+    """(time in bed, time asleep) in minutes.
+
+    Time in bed spans lights-out → getting up. Sleep spans the optional
+    "actually asleep" times, each falling back to the bed/up time when not
+    given. A timezone shift (hours) is added to both, since a night that
+    crossed a clock change really was that much longer or shorter.
+    """
+    shift  = (tz_shift or 0) * 60
+    in_bed = _span_min(bed_time, up_time) + shift
+    slept  = _span_min(asleep_time or bed_time, awake_time or up_time) + shift
+    return max(in_bed, 0), max(slept, 0)
 
 
 def _migrate_food_estimated(conn: sqlite3.Connection) -> None:
@@ -1209,24 +1254,30 @@ def get_all_sleep() -> list[dict]:
 
 def insert_sleep(date: str, bed_time: str, up_time: str, score: int,
                  asleep_time: str | None, awake_time: str | None,
-                 comment: str | None) -> int:
+                 comment: str | None, tz_shift: int | None = None) -> int:
+    # Durations are derived here, so the stored numbers can never drift from
+    # the times they came from.
+    in_bed, slept = sleep_durations(bed_time, up_time, asleep_time, awake_time, tz_shift)
     with _connect() as conn:
         cur = conn.execute(
-            "INSERT INTO sleep_log (date, bed_time, up_time, score, asleep_time, awake_time, comment) "
-            "VALUES (?,?,?,?,?,?,?)",
-            (date, bed_time, up_time, score, asleep_time, awake_time, comment),
+            "INSERT INTO sleep_log (date, bed_time, up_time, score, asleep_time, awake_time, "
+            "tz_shift, in_bed_min, sleep_min, comment) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (date, bed_time, up_time, score, asleep_time, awake_time,
+             tz_shift, in_bed, slept, comment),
         )
     return cur.lastrowid
 
 
 def update_sleep(sleep_id: int, date: str, bed_time: str, up_time: str, score: int,
                  asleep_time: str | None, awake_time: str | None,
-                 comment: str | None) -> None:
+                 comment: str | None, tz_shift: int | None = None) -> None:
+    in_bed, slept = sleep_durations(bed_time, up_time, asleep_time, awake_time, tz_shift)
     with _connect() as conn:
         conn.execute(
-            "UPDATE sleep_log SET date=?, bed_time=?, up_time=?, score=?, "
-            "asleep_time=?, awake_time=?, comment=? WHERE id=?",
-            (date, bed_time, up_time, score, asleep_time, awake_time, comment, sleep_id),
+            "UPDATE sleep_log SET date=?, bed_time=?, up_time=?, score=?, asleep_time=?, "
+            "awake_time=?, tz_shift=?, in_bed_min=?, sleep_min=?, comment=? WHERE id=?",
+            (date, bed_time, up_time, score, asleep_time, awake_time,
+             tz_shift, in_bed, slept, comment, sleep_id),
         )
 
 
