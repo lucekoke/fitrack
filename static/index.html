@@ -144,6 +144,18 @@
 
   </main>
 
+  <!-- ── Fotoansicht: mehrere Bilder nebeneinander, je einzeln zoombar ── -->
+  <div id="photo-viewer" hidden>
+    <div class="pv-toolbar">
+      <strong>Fotos vergleichen</strong>
+      <select id="pv-add-select" aria-label="Weiteres Foto"></select>
+      <button type="button" class="secondary" onclick="pv_add_selected()">+ Foto</button>
+      <span class="pv-spacer"></span>
+      <button type="button" class="secondary outline" onclick="close_photo_viewer()">Schließen</button>
+    </div>
+    <div id="pv-panels"></div>
+  </div>
+
   <!-- ── Modal ── -->
   <dialog id="modal">
     <article>
@@ -166,6 +178,6 @@
     </article>
   </dialog>
 
-  <script src="/static/app.js?v=79"></script>
+  <script src="/static/app.js?v=80"></script>
 </body>
 </html>

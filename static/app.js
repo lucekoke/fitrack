@@ -4188,7 +4188,8 @@ function render_body_photos() {
   el.innerHTML = body_photos.map(p => `
     <figure class="photo-card">
       <img src="/uploads/${esc(p.filename)}" alt="${esc(p.date)}" loading="lazy"
-           onclick="window.open('/uploads/${esc(p.filename)}', '_blank')">
+           title="Doppelklick: groß ansehen und vergleichen"
+           ondblclick="open_photo_viewer(${p.id})">
       <figcaption>
         <span>${fmt_de(p.date)}</span>
         <button class="photo-del" title="Löschen" onclick="del_body_photo(${p.id})">&#10005;</button>
@@ -4202,6 +4203,126 @@ async function del_body_photo(id) {
   await api('DELETE', `/api/body/photos/${id}`);
   await load_body();
 }
+
+// ─── Foto-Vergleichsansicht ───────────────────────────────────────────────
+// Full-screen overlay with one panel per photo. Each panel keeps its own zoom
+// and pan, so two photos can be lined up on the same body part independently.
+
+function open_photo_viewer(id) {
+  const viewer = document.getElementById('photo-viewer');
+  if (!viewer) return;
+  document.getElementById('pv-panels').innerHTML = '';
+  viewer.hidden = false;
+  document.body.style.overflow = 'hidden';   // no scrolling behind the overlay
+  _pv_fill_picker();
+  pv_add_panel(id);
+}
+
+function close_photo_viewer() {
+  const viewer = document.getElementById('photo-viewer');
+  if (!viewer) return;
+  viewer.hidden = true;
+  document.getElementById('pv-panels').innerHTML = '';   // drop the <img> refs
+  document.body.style.overflow = '';
+}
+
+// Every photo, newest first, so another one can be pulled in for comparison.
+function _pv_fill_picker() {
+  const sel = document.getElementById('pv-add-select');
+  if (!sel) return;
+  sel.innerHTML = body_photos
+    .map(p => `<option value="${p.id}">${fmt_de(p.date)}</option>`).join('');
+}
+
+function pv_add_selected() {
+  const sel = document.getElementById('pv-add-select');
+  const id  = parseInt(sel?.value, 10);
+  if (!isNaN(id)) pv_add_panel(id);
+}
+
+function pv_add_panel(id) {
+  const p = body_photos.find(x => x.id === id);
+  if (!p) return;
+  const panels = document.getElementById('pv-panels');
+  panels.insertAdjacentHTML('beforeend', `
+    <div class="pv-panel" data-id="${p.id}">
+      <div class="pv-stage">
+        <img src="/uploads/${esc(p.filename)}" alt="" draggable="false">
+      </div>
+      <div class="pv-bar">
+        <span class="pv-date">${fmt_de(p.date)}</span>
+        <span class="pv-zoom">100%</span>
+        <button type="button" title="Verkleinern" onclick="this.closest('.pv-panel')._pv.zoom(1/1.25)">&minus;</button>
+        <button type="button" title="Vergrößern"  onclick="this.closest('.pv-panel')._pv.zoom(1.25)">+</button>
+        <button type="button" title="Zurücksetzen" onclick="this.closest('.pv-panel')._pv.reset()">&#8634;</button>
+        <button type="button" title="Schließen" onclick="pv_close_panel(this)">&#10005;</button>
+      </div>
+    </div>`);
+  _pv_attach(panels.lastElementChild);
+}
+
+// Closing the last panel closes the whole viewer.
+function pv_close_panel(btn) {
+  const panels = document.getElementById('pv-panels');
+  btn.closest('.pv-panel').remove();
+  if (!panels.children.length) close_photo_viewer();
+}
+
+// Wheel zooms toward the cursor, dragging pans; state lives on the panel.
+function _pv_attach(panel) {
+  const stage = panel.querySelector('.pv-stage');
+  const img   = panel.querySelector('img');
+  const zoom_lbl = panel.querySelector('.pv-zoom');
+  let scale = 1, tx = 0, ty = 0, dragging = false, lx = 0, ly = 0;
+
+  const apply = () => {
+    img.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+    zoom_lbl.textContent = `${Math.round(scale * 100)}%`;
+  };
+  const clamp = s => Math.min(10, Math.max(0.2, s));
+
+  stage.addEventListener('wheel', e => {
+    e.preventDefault();
+    const ns = clamp(scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15));
+    // Keep the point under the cursor put while the scale changes.
+    const r  = stage.getBoundingClientRect();
+    const cx = e.clientX - r.left - r.width / 2;
+    const cy = e.clientY - r.top  - r.height / 2;
+    tx = cx - (cx - tx) * (ns / scale);
+    ty = cy - (cy - ty) * (ns / scale);
+    scale = ns;
+    apply();
+  }, { passive: false });
+
+  stage.addEventListener('pointerdown', e => {
+    dragging = true; lx = e.clientX; ly = e.clientY;
+    stage.classList.add('dragging');
+    stage.setPointerCapture(e.pointerId);
+  });
+  stage.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    tx += e.clientX - lx; ty += e.clientY - ly;
+    lx = e.clientX; ly = e.clientY;
+    apply();
+  });
+  const stop = () => { dragging = false; stage.classList.remove('dragging'); };
+  stage.addEventListener('pointerup', stop);
+  stage.addEventListener('pointercancel', stop);
+  stage.addEventListener('dblclick', () => panel._pv.reset());
+
+  panel._pv = {
+    zoom: f => { scale = clamp(scale * f); apply(); },
+    reset: () => { scale = 1; tx = 0; ty = 0; apply(); },
+    state: () => ({ scale, tx, ty }),
+  };
+  apply();
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !document.getElementById('photo-viewer')?.hidden) {
+    close_photo_viewer();
+  }
+});
 
 // Picking files asks for the date first — a progress photo is usually filed
 // under the day it was taken, which isn't necessarily today.
