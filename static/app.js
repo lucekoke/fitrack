@@ -4364,15 +4364,97 @@ document.addEventListener('keydown', e => {
   }
 });
 
+// "YYYY:MM:DD HH:MM:SS" (EXIF) → "YYYY-MM-DD".
+function _exif_to_iso(raw) {
+  const m = String(raw).match(/^(\d{4}):(\d{2}):(\d{2})/);
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
+}
+
+// Walk the TIFF block of an EXIF segment for the capture date. Prefers
+// DateTimeOriginal (when the shutter fired) over IFD0's DateTime (last
+// written), which is what Windows shows as "Aufnahmedatum".
+function _exif_scan_tiff(dv, tiff) {
+  const le  = dv.getUint16(tiff) === 0x4949;          // 'II' = little-endian
+  const u16 = o => dv.getUint16(o, le);
+  const u32 = o => dv.getUint32(o, le);
+  if (u16(tiff + 2) !== 42) return null;              // not a TIFF header
+  const ascii = (o, n) => {
+    let s = '';
+    for (let i = 0; i < n - 1; i++) s += String.fromCharCode(dv.getUint8(o + i));
+    return s;
+  };
+  const read_ifd = (ifd, wanted) => {
+    const out = { sub: null, date: null };
+    if (ifd + 2 > dv.byteLength) return out;
+    const count = u16(ifd);
+    for (let i = 0; i < count; i++) {
+      const e = ifd + 2 + i * 12;
+      if (e + 12 > dv.byteLength) break;
+      const tag = u16(e), type = u16(e + 2), n = u32(e + 4);
+      if (tag === 0x8769) out.sub = tiff + u32(e + 8);          // Exif sub-IFD
+      if (!out.date && wanted.includes(tag) && type === 2 && n > 1) {
+        const at = n > 4 ? tiff + u32(e + 8) : e + 8;
+        if (at + n <= dv.byteLength) out.date = ascii(at, n);
+      }
+    }
+    return out;
+  };
+  const ifd0 = read_ifd(tiff + u32(tiff + 4), [0x0132]);        // DateTime
+  if (ifd0.sub) {
+    const sub = read_ifd(ifd0.sub, [0x9003, 0x9004]);           // Original / Digitized
+    if (sub.date) return _exif_to_iso(sub.date);
+  }
+  return ifd0.date ? _exif_to_iso(ifd0.date) : null;
+}
+
+// Capture date from a JPEG's EXIF, reading only the header — the pixel data is
+// never touched, and nothing leaves the browser.
+async function _exif_date(file) {
+  try {
+    const buf = await file.slice(0, 256 * 1024).arrayBuffer();
+    const dv  = new DataView(buf);
+    if (dv.byteLength < 8 || dv.getUint16(0) !== 0xFFD8) return null;   // not a JPEG
+    let off = 2;
+    while (off + 4 <= dv.byteLength) {
+      if (dv.getUint8(off) !== 0xFF) break;
+      const marker = dv.getUint8(off + 1);
+      if (marker === 0xDA || marker === 0xD9) break;   // image data starts here
+      const size = dv.getUint16(off + 2);
+      if (marker === 0xE1 && off + 10 <= dv.byteLength &&
+          dv.getUint32(off + 4) === 0x45786966) {      // "Exif"
+        return _exif_scan_tiff(dv, off + 10);
+      }
+      off += 2 + size;
+    }
+  } catch { /* unreadable header → fall back below */ }
+  return null;
+}
+
+// Date to prefill for an upload: when the photo was taken, else the file's own
+// date, else today.
+async function _photo_default_date(file) {
+  const exif = await _exif_date(file);
+  if (exif) return { date: exif, source: 'Aufnahmedatum' };
+  if (file.lastModified) {
+    const d = new Date(file.lastModified);
+    const p = x => String(x).padStart(2, '0');
+    return { date: `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`,
+             source: 'Dateidatum' };
+  }
+  return { date: today_local(), source: 'heute' };
+}
+
 // Picking files asks for the date first — a progress photo is usually filed
 // under the day it was taken, which isn't necessarily today.
-function _upload_photos(file_list) {
+async function _upload_photos(file_list) {
   const files = Array.from(file_list).filter(f => f.type.startsWith('image/'));
   if (!files.length) { alert('Keine Bilddateien erkannt.'); return; }
   const names = files.map(f => esc(f.name)).join(', ');
+  const { date, source } = await _photo_default_date(files[0]);
   open_modal(files.length === 1 ? 'Foto hinzufügen' : `${files.length} Fotos hinzufügen`, `<form>
     <label>Datum
-      <input type="date" name="date" value="${today_local()}" required>
+      <input type="date" name="date" value="${date}" required>
+      <small style="color:var(--pico-muted-color)">Vorbelegt aus: ${source}</small>
     </label>
     <small style="display:block;margin-bottom:1rem;color:var(--pico-muted-color)">${names}</small>
     <div class="form-footer">
