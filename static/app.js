@@ -4203,10 +4203,28 @@ async function del_body_photo(id) {
   await load_body();
 }
 
-async function _upload_photos(file_list) {
+// Picking files asks for the date first — a progress photo is usually filed
+// under the day it was taken, which isn't necessarily today.
+function _upload_photos(file_list) {
   const files = Array.from(file_list).filter(f => f.type.startsWith('image/'));
   if (!files.length) { alert('Keine Bilddateien erkannt.'); return; }
-  const today = today_local();
+  const names = files.map(f => esc(f.name)).join(', ');
+  open_modal(files.length === 1 ? 'Foto hinzufügen' : `${files.length} Fotos hinzufügen`, `<form>
+    <label>Datum
+      <input type="date" name="date" value="${today_local()}" required>
+    </label>
+    <small style="display:block;margin-bottom:1rem;color:var(--pico-muted-color)">${names}</small>
+    <div class="form-footer">
+      <button type="button" class="secondary outline" onclick="close_modal()">Abbrechen</button>
+      <button type="submit">Hochladen</button>
+    </div>
+  </form>`, async data => {
+    if (!data.date) throw new Error('Bitte ein Datum wählen.');
+    await _store_photos(files, data.date);
+  });
+}
+
+async function _store_photos(files, date) {
   const zone = document.getElementById('photo-dropzone');
   zone.setAttribute('aria-busy', 'true');
   try {
@@ -4218,12 +4236,10 @@ async function _upload_photos(file_list) {
         reader.readAsDataURL(file);
       });
       await api('POST', '/api/body/photos', {
-        date: today, filename: file.name, data_b64, comment: null,
+        date, filename: file.name, data_b64, comment: null,
       });
     }
     await load_body();
-  } catch (err) {
-    alert('Fehler beim Hochladen: ' + err.message);
   } finally {
     zone.removeAttribute('aria-busy');
   }
