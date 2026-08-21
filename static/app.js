@@ -4227,11 +4227,34 @@ function close_photo_viewer() {
 }
 
 // Every photo, newest first, so another one can be pulled in for comparison.
+// Several photos usually share one date, so the label carries a running index
+// and the picker is backed by a thumbnail — the date alone can't tell them
+// apart.
 function _pv_fill_picker() {
   const sel = document.getElementById('pv-add-select');
   if (!sel) return;
-  sel.innerHTML = body_photos
-    .map(p => `<option value="${p.id}">${fmt_de(p.date)}</option>`).join('');
+  const total = {};
+  for (const p of body_photos) total[p.date] = (total[p.date] || 0) + 1;
+  const seen = {};
+  sel.innerHTML = body_photos.map(p => {
+    seen[p.date] = (seen[p.date] || 0) + 1;
+    const label = total[p.date] > 1
+      ? `${fmt_de(p.date)} (${seen[p.date]}/${total[p.date]})`
+      : fmt_de(p.date);
+    return `<option value="${p.id}">${label}</option>`;
+  }).join('');
+  pv_preview();
+}
+
+// Show the currently selected candidate, so you can see which photo you are
+// about to compare against before adding it.
+function pv_preview() {
+  const sel = document.getElementById('pv-add-select');
+  const img = document.getElementById('pv-preview');
+  if (!sel || !img) return;
+  const p = body_photos.find(x => x.id === parseInt(sel.value, 10));
+  if (p) { img.src = `/uploads/${esc(p.filename)}`; img.hidden = false; }
+  else   { img.removeAttribute('src'); img.hidden = true; }
 }
 
 function pv_add_selected() {

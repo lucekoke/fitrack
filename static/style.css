@@ -624,3 +624,17 @@ tr.meal-detail td, tr.recipe-detail td { font-size: .85rem; }
   cursor: pointer;
 }
 .pv-bar button:hover { border-color: #8a887c; }
+
+/* Thumbnail of the photo currently chosen in the compare picker — many photos
+   share a date, so the label alone doesn't identify one. */
+#pv-preview {
+  height: 2.6rem;
+  width: 2.6rem;
+  object-fit: cover;
+  border: 1px solid #4a4a41;
+  border-radius: var(--pico-border-radius);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+#pv-preview:hover { border-color: #b9b7ad; }
+#pv-preview[hidden] { display: none; }
