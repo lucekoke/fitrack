@@ -4416,7 +4416,10 @@ async function load_analysis() {
   try {
     if (!meals.length) meals = await api('GET', '/api/meals');
   } catch { /* meals simply unavailable */ }
-  on_ana_type_change();   // populate series + plot dropdowns for the current Typ, then draw
+  try {
+    if (!sleep_log.length) sleep_log = await api('GET', '/api/sleep');
+  } catch { /* sleep simply unavailable */ }
+  on_ana_area_change();   // fill Typ for the current Bereich, then the rest, then draw
 }
 
 // Plots available per Typ (dropdown 3 depends on dropdown 1).
@@ -4428,6 +4431,61 @@ const ANA_KINDS = {
   ernaehrung: [['balken', 'Balken pro Tag']],
 };
 
+// Sleep metrics. Durations are plotted in hours so the axis reads 0–10 rather
+// than in raw minutes; the score is plotted as-is.
+const _SLEEP_METRICS = {
+  schlafdauer:  { label: 'Schlafdauer',     unit: 'h',     val: s => _h(_sleep_stats(s).slept) },
+  zeit_im_bett: { label: 'Zeit im Bett',    unit: 'h',     val: s => _h(_sleep_stats(s).in_bed) },
+  qualitaet:    { label: 'Schlafqualität',  unit: 'Score', val: s => s.score },
+};
+
+function _h(min) { return Math.round((min / 60) * 10) / 10; }
+
+// Full span of logged nights — the default x-axis for Schlaf charts.
+function _sleep_date_range() {
+  if (!sleep_log.length) return null;
+  let min = sleep_log[0].date, max = sleep_log[0].date;
+  for (const s of sleep_log) { if (s.date < min) min = s.date; if (s.date > max) max = s.date; }
+  return { min, max };
+}
+
+function _sleep_nights_sorted() {
+  return [...sleep_log].sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function _sleep_bar_label(date) {
+  return `${date.slice(8, 10)}.${date.slice(5, 7)}.`;
+}
+
+// One bar per night for a single metric.
+function _sleep_metric_bars(metric) {
+  const cfg = _SLEEP_METRICS[metric];
+  if (!cfg || !sleep_log.length) return null;
+  const bars = _sleep_nights_sorted().map(s => {
+    const v = cfg.val(s);
+    return { label: _sleep_bar_label(s.date), date: s.date, value: v,
+             title: `${fmt_de(s.date)}: ${v} ${cfg.unit}` };
+  });
+  return { bars, unit: cfg.unit };
+}
+
+// Both durations per night, drawn as two bars side by side.
+function _sleep_pair_bars() {
+  if (!sleep_log.length) return null;
+  const bars = _sleep_nights_sorted().map(s => {
+    const st = _sleep_stats(s);
+    const slept = _h(st.slept), in_bed = _h(st.in_bed);
+    return { label: _sleep_bar_label(s.date), date: s.date, values: [slept, in_bed],
+             title: `${fmt_de(s.date)}: ${slept} h Schlaf, ${in_bed} h im Bett` };
+  });
+  return {
+    bars,
+    series: [{ label: 'Schlafdauer', color: ANA_PALETTE[0] },
+             { label: 'Zeit im Bett', color: ANA_PALETTE[2] }],
+    unit: 'h',
+  };
+}
+
 // Nutrition metrics for the Ernährung analysis type. `target` names the
 // settings key whose value (if set) is drawn as a red reference line.
 const ANA_NUTRITION = {
@@ -4437,22 +4495,57 @@ const ANA_NUTRITION = {
   fat:     { label: 'Fett',          unit: 'g',    field: 'fat_g',     round: r_nut,  target: null },
 };
 
-// Dropdown 1 (Typ) changed → repopulate dropdowns 2 (series) and 3 (plot).
+// The Analyse controls mirror the app's own tabs: pick a Bereich first, then
+// what to plot within it. Everything below the Bereich is rebuilt on change,
+// so switching areas always lands on that area's first plot.
+const ANA_AREAS = {
+  aktivitaeten: [['uebung', 'Übung'], ['muskel', 'Muskelgruppe']],
+  ernaehrung:   [['kcal', 'Kalorien'], ['protein', 'Eiweiß'],
+                 ['carbs', 'Kohlenhydrate'], ['fat', 'Fett']],
+  schlaf:       [['schlafdauer', 'Schlafdauer'], ['zeit_im_bett', 'Zeit im Bett'],
+                 ['qualitaet', 'Schlafqualität'],
+                 ['dauer_bett', 'Schlafdauer + Zeit im Bett']],
+  koerper:      [['gewicht', 'Körpergewicht']],
+};
+
+// Plot styles offered for one Typ. Only Übung has a real choice; the others
+// have a single natural rendering, and their dropdown is hidden.
+function _ana_kinds(area, type) {
+  if (area === 'aktivitaeten') return ANA_KINDS[type] || [];
+  if (area === 'ernaehrung')   return [['balken', 'Balken pro Tag']];
+  if (area === 'schlaf')       return [['balken', 'Balken pro Nacht']];
+  return [['koerper', 'Verlauf']];
+}
+
+function on_ana_area_change() {
+  const area = document.getElementById('ana-area').value;
+  const sel  = document.getElementById('ana-type');
+  sel.innerHTML = (ANA_AREAS[area] || [])
+    .map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('');
+  on_ana_type_change();
+}
+
+// Typ changed → repopulate the series + plot pickers below it.
 function on_ana_type_change() {
+  const area = document.getElementById('ana-area').value;
   const type = document.getElementById('ana-type').value;
   _fill_analysis_series(type);
-  _fill_analysis_kind(type);
-  // Körpergewicht has no sub-selection → hide the series picker
-  const field = document.getElementById('ana-series-field');
-  if (field) field.style.display = (type === 'koerper') ? 'none' : '';
+  _fill_analysis_kind(area, type);
+  // "Auswahl" only means something for Übung/Muskelgruppe; the other areas
+  // are fully described by their Typ.
+  const s_field = document.getElementById('ana-series-field');
+  if (s_field) s_field.style.display = (area === 'aktivitaeten') ? '' : 'none';
+  // A dropdown with a single option is noise — hide it.
+  const k_field = document.getElementById('ana-kind-field');
+  if (k_field) k_field.style.display =
+    document.getElementById('ana-kind').options.length > 1 ? '' : 'none';
   render_analysis();
 }
 
-function _fill_analysis_kind(type) {
+function _fill_analysis_kind(area, type) {
   const sel = document.getElementById('ana-kind');
-  const prev = sel.value;
-  sel.innerHTML = (ANA_KINDS[type] || []).map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
-  if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
+  sel.innerHTML = _ana_kinds(area, type)
+    .map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('');
 }
 
 function _fill_analysis_series(type) {
@@ -4470,11 +4563,8 @@ function _fill_analysis_series(type) {
         (gOpts ? `<optgroup label="Muskelgruppe">${gOpts}</optgroup>` : '') +
         (mOpts ? `<optgroup label="Muskel">${mOpts}</optgroup>` : '');
     }
-  } else if (type === 'koerper') {
-    sel.innerHTML = '<option value="bw">Körpergewicht</option>';
-  } else if (type === 'ernaehrung') {
-    sel.innerHTML = Object.entries(ANA_NUTRITION)
-      .map(([v, c]) => `<option value="${v}">${esc(c.label)}</option>`).join('');
+  } else if (type !== 'uebung') {
+    sel.innerHTML = '';        // these areas need no sub-selection
   } else {   // uebung — Kraftübungen only (Dehnübungen aren't plotted)
     const names = new Set();
     for (const s of workouts) for (const ex of s.exercises)
@@ -4538,8 +4628,9 @@ let ana_x_range = null;
 
 function _effective_range() {
   if (ana_x_range) return ana_x_range;
-  const type = document.getElementById('ana-type')?.value;
-  if (type === 'ernaehrung') return _nutrition_date_range();
+  const area = document.getElementById('ana-area')?.value;
+  if (area === 'ernaehrung') return _nutrition_date_range();
+  if (area === 'schlaf')     return _sleep_date_range();
   return _workout_date_range();
 }
 
@@ -4552,19 +4643,29 @@ function _range_bars(res) {
 
 function render_analysis() {
   const el   = document.getElementById('analysis-chart');
+  const area = document.getElementById('ana-area')?.value || 'aktivitaeten';
   const type = document.getElementById('ana-type')?.value || 'uebung';
   const kind = document.getElementById('ana-kind')?.value || 'verlauf';
   const ser  = document.getElementById('ana-series')?.value || '';
   const range = _effective_range();
 
-  if (type === 'ernaehrung') {
-    const metric = ANA_NUTRITION[ser] ? ser : 'kcal';
+  if (area === 'ernaehrung') {
+    const metric = ANA_NUTRITION[type] ? type : 'kcal';
     const cfg = ANA_NUTRITION[metric];
     const t = cfg.target ? parseFloat(settings[cfg.target]) : NaN;
     const target = (!isNaN(t) && t > 0) ? { value: t, label: 'Ziel' } : null;
     _render_bars(el, _range_bars(_nutrition_daily(metric)),
       cfg.label, 'Noch keine Ernährungsdaten vorhanden.', target, range);
-  } else if (type === 'koerper') {
+  } else if (area === 'schlaf') {
+    const empty = 'Noch keine Schlafdaten vorhanden.';
+    if (type === 'dauer_bett') {
+      _render_grouped_bars(el, _range_bars(_sleep_pair_bars()),
+        'Schlafdauer und Zeit im Bett', empty, range);
+    } else {
+      _render_bars(el, _range_bars(_sleep_metric_bars(type)),
+        _SLEEP_METRICS[type]?.label || 'Schlaf', empty, null, range);
+    }
+  } else if (area === 'koerper') {
     render_line_chart(el, _bodyweight_points(), 'Körpergewicht', ana_x_range || undefined);
   } else if (type === 'muskel') {
     if (!ser.startsWith('mg:') && !ser.startsWith('mu:')) {
@@ -4989,6 +5090,93 @@ function _render_bars(el, res, caption, empty_msg, target = null, x_range = null
       <figure><table style="font-size:.85rem">
         <thead><tr><th>x</th><th>${esc(unit)}</th></tr></thead>
         <tbody>${bars.map(b => `<tr><td>${esc(b.label)}</td><td>${b.value}</td></tr>`).join('')}</tbody>
+      </table></figure>
+    </details>`;
+}
+
+// Grouped bars: several series per x slot, drawn side by side rather than
+// stacked, so two durations can be compared night by night.
+// res = { bars:[{label, date, values:[…], title}], series:[{label,color}], unit }
+function _render_grouped_bars(el, res, caption, empty_msg, x_range = null) {
+  if (res === null) { el.innerHTML = `<p class="empty">${empty_msg}</p>`; return; }
+  const { bars, series, unit } = res;
+  if (!bars.length) { el.innerHTML = '<p class="empty">Keine Daten für diese Auswahl vorhanden.</p>'; return; }
+
+  const { W, H, top, right, bottom, left } = _ANA;
+  const iw = W - left - right, ih = H - top - bottom;
+  const ticks = _nice_ticks(0, Math.max(0, ...bars.flatMap(b => b.values)));
+  const y_max = ticks[ticks.length - 1] || 1;
+  const Y = v => top + ih - (v / y_max) * ih;
+
+  const n = bars.length;
+  const grid = ticks.map(v =>
+    `<line x1="${left}" y1="${Y(v)}" x2="${left + iw}" y2="${Y(v)}" stroke="var(--ana-grid)" stroke-width="1"/>
+     <text x="${left - 8}" y="${Y(v) + 4}" text-anchor="end" class="ana-tick">${v}</text>`).join('');
+
+  // Same proportional time axis as the single-series chart (see _render_bars).
+  const time_axis = x_range && bars.every(b => b.date);
+  let center, group_w, show_lbl;
+  if (time_axis) {
+    const t     = d => new Date(d + 'T00:00:00').getTime();
+    const t_min = t(x_range.min), t_max = t(x_range.max);
+    const span  = Math.max(t_max - t_min, 1);
+    center = b => left + ((t(b.date) - t_min) / span) * iw;
+    if (n === 1) { group_w = Math.min(64, iw * 0.3); center = () => left + iw / 2; }
+    else {
+      const xs = bars.map(center).sort((a, b) => a - b);
+      let gap = Infinity;
+      for (let i = 1; i < xs.length; i++) gap = Math.min(gap, xs[i] - xs[i - 1]);
+      group_w = Math.max(6, Math.min(gap * 0.7, 56));
+    }
+    const n_lbl = Math.min(6, n);
+    const lbl_ix = new Set(Array.from({ length: n_lbl },
+      (_, i) => Math.round(i * (n - 1) / Math.max(n_lbl - 1, 1))));
+    show_lbl = i => lbl_ix.has(i);
+  } else {
+    const slot = iw / n;
+    group_w = Math.min(slot * 0.62, 64);
+    center = (_b, i) => left + i * slot + slot / 2;
+    const every = Math.ceil(n / 12);
+    show_lbl = i => i % every === 0;
+  }
+  const fmt_d = d => `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(2, 4)}`;
+  const bw = group_w / series.length;
+
+  const svg_bars = bars.map((b, i) => {
+    const cx = center(b, i);
+    const x0 = Math.max(left, Math.min(cx - group_w / 2, left + iw - group_w));
+    const rects = series.map((s, si) => {
+      const v = b.values[si] || 0;
+      const y = Y(v);
+      return `<rect x="${(x0 + si * bw).toFixed(1)}" y="${y.toFixed(1)}"
+                    width="${Math.max(bw - 1, 1).toFixed(1)}" height="${(top + ih - y).toFixed(1)}"
+                    fill="${s.color}" rx="2"><title>${esc(b.title)}</title></rect>`;
+    }).join('');
+    const lbl = show_lbl(i)
+      ? `<text x="${cx.toFixed(1)}" y="${top + ih + 22}" text-anchor="middle" class="ana-tick">${esc(time_axis ? fmt_d(b.date) : b.label)}</text>` : '';
+    return rects + lbl;
+  }).join('');
+
+  const legend = `<div class="ana-legend">${series.map(s =>
+    `<span><i style="background:${s.color}"></i>${esc(s.label)} (${esc(unit)})</span>`).join('')}</div>`;
+
+  el.innerHTML = `
+    <p class="chart-caption">${caption} &mdash; Einheit: <strong>${esc(unit)}</strong></p>
+    ${legend}
+    <div class="chart-wrap">
+      <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${caption}" style="width:100%;height:auto;display:block">
+        <rect x="0" y="0" width="${W}" height="${H}" fill="var(--ana-surface)"/>
+        ${grid}
+        <line x1="${left}" y1="${top + ih}" x2="${left + iw}" y2="${top + ih}" stroke="var(--ana-axis)" stroke-width="1"/>
+        ${svg_bars}
+      </svg>
+    </div>
+    <details style="margin-top:.75rem">
+      <summary style="cursor:pointer;font-size:.9rem;color:var(--pico-muted-color)">Datentabelle</summary>
+      <figure><table style="font-size:.85rem">
+        <thead><tr><th>Datum</th>${series.map(s => `<th>${esc(s.label)}</th>`).join('')}</tr></thead>
+        <tbody>${bars.map(b =>
+          `<tr><td>${b.date ? fmt_de(b.date) : esc(b.label)}</td>${b.values.map(v => `<td>${v}</td>`).join('')}</tr>`).join('')}</tbody>
       </table></figure>
     </details>`;
 }
