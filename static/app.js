@@ -2211,6 +2211,14 @@ function open_targets_modal() {
       <input type="number" name="protein_target" min="0" step="1"
              value="${esc(settings.protein_target || '')}" placeholder="z.B. 150 — leer = kein Ziel">
     </label>
+    <label>KH-Limit (g/Tag)
+      <input type="number" name="carbs_target" min="0" step="1"
+             value="${esc(settings.carbs_target || '')}" placeholder="z.B. 300 — leer = kein Ziel">
+    </label>
+    <label>Fett-Limit (g/Tag)
+      <input type="number" name="fat_target" min="0" step="1"
+             value="${esc(settings.fat_target || '')}" placeholder="z.B. 80 — leer = kein Ziel">
+    </label>
     <div class="form-footer">
       <button type="button" class="secondary outline" onclick="close_modal()">Abbrechen</button>
       <button type="submit">Speichern</button>
@@ -2219,6 +2227,8 @@ function open_targets_modal() {
     await api('PUT', '/api/settings', {
       kcal_target:    data.kcal_target    || null,
       protein_target: data.protein_target || null,
+      carbs_target:   data.carbs_target   || null,
+      fat_target:     data.fat_target     || null,
     });
     await load_settings();
     render_meals();
@@ -2236,30 +2246,37 @@ function _target_band(actual, target, above_is_ok) {
   return a <= 0.05 ? 'target-ok' : a <= 0.15 ? 'target-warn' : 'target-bad';
 }
 
-function _target_row_html(dk, dp) {
-  const kcal_t = parseFloat(settings.kcal_target);
-  const prot_t = parseFloat(settings.protein_target);
-  if (isNaN(kcal_t) && isNaN(prot_t)) return '';
-  let kcal_cell = '', prot_cell = '';
-  if (!isNaN(kcal_t) && kcal_t > 0) {
-    const diff = Math.round(kcal_t - dk);
-    const cls  = _target_band(dk, kcal_t, false);
-    kcal_cell  = `<span class="${cls}">${diff >= 0 ? diff + ' übrig' : (-diff) + ' drüber'}</span>
-                  <small>/ ${Math.round(kcal_t)}</small>`;
-  }
-  if (!isNaN(prot_t) && prot_t > 0) {
-    const diff = dp - prot_t;
-    const cls  = _target_band(dp, prot_t, true);
-    prot_cell  = `<span class="${cls}">${diff >= 0 ? 'erreicht ✓' : (-diff).toFixed(0) + 'g fehlen'}</span>
-                  <small>/ ${Math.round(prot_t)}g</small>`;
-  }
+// An upper limit (kcal, KH, Fett): what is left, or how far over.
+function _limit_cell(actual, target, unit) {
+  const diff = target - actual;
+  const cls  = _target_band(actual, target, false);
+  const n    = Math.abs(diff) < 1 ? Math.round(Math.abs(diff)) : Math.round(Math.abs(diff));
+  return `<span class="${cls}">${diff >= 0 ? `${n}${unit} übrig` : `${n}${unit} drüber`}</span>
+          <small>/ ${Math.round(target)}${unit}</small>`;
+}
+
+// A lower goal (Protein): reached, or how much is still missing.
+function _goal_cell(actual, target, unit) {
+  const diff = actual - target;
+  const cls  = _target_band(actual, target, true);
+  return `<span class="${cls}">${diff >= 0 ? 'erreicht ✓' : `${(-diff).toFixed(0)}${unit} fehlen`}</span>
+          <small>/ ${Math.round(target)}${unit}</small>`;
+}
+
+function _target_row_html(dk, dp, dc, df) {
+  const t = k => { const v = parseFloat(settings[k]); return (!isNaN(v) && v > 0) ? v : null; };
+  const kcal_t = t('kcal_target'), prot_t = t('protein_target');
+  const carb_t = t('carbs_target'), fat_t  = t('fat_target');
+  if (!kcal_t && !prot_t && !carb_t && !fat_t) return '';
   return `<tr class="target-row">
     <td></td>
     <td>Bilanz (Soll)</td>
     <td></td>
-    <td>${kcal_cell}</td>
-    <td>${prot_cell}</td>
-    <td></td><td></td><td></td>
+    <td>${kcal_t ? _limit_cell(dk, kcal_t, '')  : ''}</td>
+    <td>${prot_t ? _goal_cell(dp, prot_t, 'g')  : ''}</td>
+    <td>${carb_t ? _limit_cell(dc, carb_t, 'g') : ''}</td>
+    <td>${fat_t  ? _limit_cell(df, fat_t,  'g') : ''}</td>
+    <td></td>
   </tr>`;
 }
 
@@ -2370,7 +2387,7 @@ function render_meals() {
             <td><strong>${dc.toFixed(1)}g</strong></td>
             <td><strong>${df.toFixed(1)}g</strong></td>
             <td></td>
-          </tr>${_target_row_html(dk, dp)}</tfoot>
+          </tr>${_target_row_html(dk, dp, dc, df)}</tfoot>
         </table>
       </figure>
     </article>`;
@@ -4491,8 +4508,8 @@ function _sleep_pair_bars() {
 const ANA_NUTRITION = {
   kcal:    { label: 'Kalorien',      unit: 'kcal', field: 'kcal',      round: r_kcal, target: 'kcal_target' },
   protein: { label: 'Eiweiß',        unit: 'g',    field: 'protein_g', round: r_nut,  target: 'protein_target' },
-  carbs:   { label: 'Kohlenhydrate', unit: 'g',    field: 'carbs_g',   round: r_nut,  target: null },
-  fat:     { label: 'Fett',          unit: 'g',    field: 'fat_g',     round: r_nut,  target: null },
+  carbs:   { label: 'Kohlenhydrate', unit: 'g',    field: 'carbs_g',   round: r_nut,  target: 'carbs_target' },
+  fat:     { label: 'Fett',          unit: 'g',    field: 'fat_g',     round: r_nut,  target: 'fat_target' },
 };
 
 // The Analyse controls mirror the app's own tabs: pick a Bereich first, then
@@ -5038,15 +5055,21 @@ function _render_bars(el, res, caption, empty_msg, target = null, x_range = null
     const t     = d => new Date(d + 'T00:00:00').getTime();
     const t_min = t(x_range.min), t_max = t(x_range.max);
     const span  = Math.max(t_max - t_min, 1);
-    center = b => left + ((t(b.date) - t_min) / span) * iw;
+    const raw   = b => left + ((t(b.date) - t_min) / span) * iw;
     if (n === 1) {
       bw = Math.min(64, iw * 0.3);
       center = () => left + iw / 2;
     } else {
-      const xs = bars.map(center).sort((a, b) => a - b);
+      const xs = bars.map(raw).sort((a, b) => a - b);
       let gap = Infinity;
       for (let i = 1; i < xs.length; i++) gap = Math.min(gap, xs[i] - xs[i - 1]);
       bw = Math.max(6, Math.min(gap * 0.7, 56));
+      // Inset by a full bar width: half of it clears the bar itself, the rest
+      // leaves the same breathing room at the edges as between the bars, so
+      // the first and last no longer sit flush against the axis.
+      const pad = bw;
+      const inner = Math.max(iw - 2 * pad, 1);
+      center = b => left + pad + ((t(b.date) - t_min) / span) * inner;
     }
     // ≤6 evenly-picked dates as x labels (matches the line chart).
     const n_lbl = Math.min(6, n);
@@ -5120,13 +5143,16 @@ function _render_grouped_bars(el, res, caption, empty_msg, x_range = null) {
     const t     = d => new Date(d + 'T00:00:00').getTime();
     const t_min = t(x_range.min), t_max = t(x_range.max);
     const span  = Math.max(t_max - t_min, 1);
-    center = b => left + ((t(b.date) - t_min) / span) * iw;
+    const raw = b => left + ((t(b.date) - t_min) / span) * iw;
     if (n === 1) { group_w = Math.min(64, iw * 0.3); center = () => left + iw / 2; }
     else {
-      const xs = bars.map(center).sort((a, b) => a - b);
+      const xs = bars.map(raw).sort((a, b) => a - b);
       let gap = Infinity;
       for (let i = 1; i < xs.length; i++) gap = Math.min(gap, xs[i] - xs[i - 1]);
       group_w = Math.max(6, Math.min(gap * 0.7, 56));
+      const pad = group_w;
+      const inner = Math.max(iw - 2 * pad, 1);
+      center = b => left + pad + ((t(b.date) - t_min) / span) * inner;
     }
     const n_lbl = Math.min(6, n);
     const lbl_ix = new Set(Array.from({ length: n_lbl },

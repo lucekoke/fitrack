@@ -337,6 +337,8 @@ def update_food(food_id: int, body: FoodIn):
 class SettingsIn(BaseModel):
     kcal_target: str | None = None      # daily calorie limit
     protein_target: str | None = None   # daily protein goal (g)
+    carbs_target: str | None = None     # daily carb limit (g)
+    fat_target: str | None = None       # daily fat limit (g)
 
 @app.get("/api/settings")
 def get_settings():
