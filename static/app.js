@@ -4474,6 +4474,16 @@ function _sleep_bar_label(date) {
   return `${date.slice(8, 10)}.${date.slice(5, 7)}.`;
 }
 
+// Schlafqualität as a series for the line chart — one point per night. The
+// shared renderer draws it as a dotted step line, same as the other Verläufe.
+function _sleep_score_points() {
+  return {
+    points: _sleep_nights_sorted().map(s => ({ date: s.date, avg: s.score, max: s.score })),
+    unit: 'Score',
+    single: true,
+  };
+}
+
 // One bar per night for a single metric.
 function _sleep_metric_bars(metric) {
   const cfg = _SLEEP_METRICS[metric];
@@ -4530,7 +4540,8 @@ const ANA_AREAS = {
 function _ana_kinds(area, type) {
   if (area === 'aktivitaeten') return ANA_KINDS[type] || [];
   if (area === 'ernaehrung')   return [['balken', 'Balken pro Tag']];
-  if (area === 'schlaf')       return [['balken', 'Balken pro Nacht']];
+  if (area === 'schlaf')
+    return type === 'qualitaet' ? [['verlauf', 'Verlauf']] : [['balken', 'Balken pro Nacht']];
   return [['koerper', 'Verlauf']];
 }
 
@@ -4678,6 +4689,8 @@ function render_analysis() {
     if (type === 'dauer_bett') {
       _render_grouped_bars(el, _range_bars(_sleep_pair_bars()),
         'Schlafdauer und Zeit im Bett', empty, range);
+    } else if (type === 'qualitaet') {
+      render_line_chart(el, _sleep_score_points(), 'Schlafqualität', range);
     } else {
       _render_bars(el, _range_bars(_sleep_metric_bars(type)),
         _SLEEP_METRICS[type]?.label || 'Schlaf', empty, null, range);
