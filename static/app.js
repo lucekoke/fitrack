@@ -154,10 +154,15 @@ function opt(val, suffix = '', fallback = '—') {
 
 // Today's date in LOCAL time (toISOString() is UTC and rolls over to the
 // next day in the evening for negative UTC offsets).
-function today_local() {
+// Local date `days` away from today as YYYY-MM-DD; Date handles month/year
+// rollover, so -1 on the 1st lands on the last day of the previous month.
+function date_offset_local(days = 0) {
   const d = new Date();
+  d.setDate(d.getDate() + days);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
+
+function today_local() { return date_offset_local(0); }
 
 // Format an ISO date (YYYY-MM-DD) as German dd.mm.yyyy for display. Inputs that
 // aren't a full ISO date are returned unchanged.
@@ -3895,7 +3900,7 @@ function tpl_sleep(s = null) {
   const v = (k, d = '') => s && s[k] != null ? esc(s[k]) : d;
   return `<form>
     <label>Nacht vom
-      <input type="date" name="date" value="${v('date', today_local())}" required
+      <input type="date" name="date" value="${v('date', date_offset_local(-1))}" required
              oninput="update_sleep_night_hint()">
       <small id="sleep-night-hint" style="color:var(--pico-muted-color)"></small>
     </label>
